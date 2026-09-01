@@ -1,0 +1,18 @@
+{% extends "planner/base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Vue d'ensemble</h2>
+  <div class="hint">Trame type de la semaine.</div>
+  <div style="overflow-x:auto">
+    <table class="weekgrid">
+      <tr><th>Créneau</th>{% for d in day_headers %}<th>{{ d }}</th>{% endfor %}</tr>
+      {% for row in table %}
+      <tr>
+        <td class="slot">{{ row.slot }}</td>
+        {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+{% endblock %}

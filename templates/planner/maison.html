@@ -1,0 +1,60 @@
+{% extends "planner/base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Rotation ménage (enfants)</h2>
+  <div class="hint">Appuyez pour alterner.</div>
+  <div class="rotation">
+    <div><div class="who">{% if settings.rotation_table == 'fille' %}{{ settings.fille_name }}{% else %}{{ settings.fils_name }}{% endif %}</div>
+      <div style="font-size:12px;color:var(--muted)">Responsable de la table</div></div>
+    <form method="post" action="{% url 'toggle_rotation' %}">{% csrf_token %}<input type="hidden" name="which" value="table">
+      <button type="submit">Changer</button></form>
+  </div>
+  <div class="rotation">
+    <div><div class="who">{% if settings.rotation_lave_vaisselle == 'fille' %}{{ settings.fille_name }}{% else %}{{ settings.fils_name }}{% endif %}</div>
+      <div style="font-size:12px;color:var(--muted)">Responsable du lave-vaisselle</div></div>
+    <form method="post" action="{% url 'toggle_rotation' %}">{% csrf_token %}<input type="hidden" name="which" value="lv">
+      <button type="submit">Changer</button></form>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Le linge</h2>
+  <p class="hint">Panier sale mis en salle de bain le mardi et jeudi soir. Lessive lancée mercredi et vendredi. Linge propre plié le jour même.</p>
+</div>
+
+<div class="card">
+  <h2>Liste de courses</h2>
+  <div class="hint">Jour de courses : {{ settings.get_courses_day_display }}.</div>
+  {% for cat, items in grouped.items %}
+    <div class="courses-cat">
+      <h3>{{ cat }}</h3>
+      {% for item in items %}
+        <div class="task {% if item.checked %}done{% endif %}">
+          <input type="checkbox" class="course-toggle" data-id="{{ item.id }}" {% if item.checked %}checked{% endif %}>
+          <label>{{ item.name }}</label>
+        </div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+  <form method="post" action="{% url 'add_grocery' %}" class="addrow">{% csrf_token %}
+    <input type="text" name="name" placeholder="Ajouter un article…">
+    <button type="submit">Ajouter</button>
+  </form>
+  <form method="post" action="{% url 'reset_grocery' %}" style="margin-top:10px;">{% csrf_token %}
+    <button type="submit" class="resetbtn">Réinitialiser les cases</button>
+  </form>
+</div>
+
+<script>
+const CSRF = "{{ csrf_token }}";
+document.querySelectorAll('.course-toggle').forEach(cb=>{
+  cb.addEventListener('change', ()=>{
+    cb.closest('.task').classList.toggle('done', cb.checked);
+    const fd = new FormData();
+    fd.append('item_id', cb.dataset.id);
+    fd.append('checked', cb.checked?'1':'0');
+    fetch("{% url 'toggle_grocery' %}", {method:'POST', headers:{'X-CSRFToken':CSRF}, body: fd});
+  });
+});
+</script>
+{% endblock %}

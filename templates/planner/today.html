@@ -1,0 +1,66 @@
+{% extends "planner/base.html" %}
+{% block content %}
+<div class="dayrow">
+  {% for c in day_chips %}
+    <a class="daychip {% if c.is_selected %}active{% endif %}" href="?day={{ c.key }}">
+      <span class="d">{{ c.label|slice:":3" }}</span>{{ c.full }}
+    </a>
+  {% endfor %}
+</div>
+
+<div class="kidgrid">
+  {% for card in cards|slice:":2" %}
+  <div class="kidcard {{ card.person }}">
+    <div class="head"><span>{{ card.name }}</span><span>{{ card.pct }}%</span></div>
+    <div class="progressbar"><div style="width:{{ card.pct }}%"></div></div>
+    {% for task in card.tasks %}
+      {% if task.info %}
+        <div class="task info"><span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label></div>
+      {% else %}
+        <div class="task {% if task.done %}done{% endif %}">
+          <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
+                 {% if task.done %}checked{% endif %} class="task-toggle">
+          <label>{{ task.label }}</label>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="parentgrid">
+  {% for card in cards|slice:"2:" %}
+  <div class="kidcard {{ card.person }}">
+    <div class="head"><span>{{ card.name }}</span><span>{{ card.pct }}%</span></div>
+    <div class="progressbar"><div style="width:{{ card.pct }}%"></div></div>
+    {% for task in card.tasks %}
+      {% if task.info %}
+        <div class="task info"><span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label></div>
+      {% else %}
+        <div class="task {% if task.done %}done{% endif %}">
+          <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
+                 {% if task.done %}checked{% endif %} class="task-toggle">
+          <label>{{ task.label }}</label>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+const CSRF = "{{ csrf_token }}";
+const DAY = "{{ day }}";
+document.querySelectorAll('.task-toggle').forEach(cb=>{
+  cb.addEventListener('change', ()=>{
+    cb.closest('.task').classList.toggle('done', cb.checked);
+    const fd = new FormData();
+    fd.append('person', cb.dataset.person);
+    fd.append('task_id', cb.dataset.task);
+    fd.append('day', DAY);
+    fd.append('done', cb.checked ? '1' : '0');
+    fetch("{% url 'toggle_task' %}", {method:'POST', headers:{'X-CSRFToken':CSRF}, body: fd});
+  });
+});
+</script>
+{% endblock %}

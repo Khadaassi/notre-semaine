@@ -1,0 +1,60 @@
+{% extends "planner/base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Menu de la semaine</h2>
+  {% for row in day_rows %}
+    <div class="menurow">
+      <div class="mday">{{ row.label }}</div>
+      <form method="post" style="flex:1;display:flex;">{% csrf_token %}
+        <input type="hidden" name="set_day" value="{{ row.day }}">
+        <select name="recipe_id" onchange="this.form.submit()">
+          <option value="">—</option>
+          {% for r in recipes %}
+            <option value="{{ r.id }}" {% if row.selected == r.id %}selected{% endif %}>{{ r.name }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <h2>Ingrédients à acheter cette semaine</h2>
+  {% if all_ingredients %}
+    <div class="tagrow">{% for i in all_ingredients %}<span class="tag">{{ i }}</span>{% endfor %}</div>
+    <form method="post" style="margin-top:10px;">{% csrf_token %}
+      <button type="submit" name="copy_to_courses" value="1">Ajouter à la liste de courses</button>
+    </form>
+  {% else %}
+    <p class="hint">Choisissez des recettes ci-dessus.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Recettes enregistrées</h2>
+  {% for cat, items in by_cat.items %}
+    <div class="courses-cat">
+      <h3>{{ cat }}</h3>
+      {% for r in items %}
+        <div class="recipe">
+          {% if r.photo %}<img src="{{ r.photo.url }}">{% else %}<div class="thumb"></div>{% endif %}
+          <div style="flex:1;">
+            <div class="rname"><span>{{ r.name }}</span>
+              <form method="post" style="display:inline;">{% csrf_token %}
+                <button type="submit" name="delete_recipe" value="{{ r.id }}" class="delbtn">Supprimer</button>
+              </form>
+            </div>
+            <div class="tagrow">{% for i in r.ingredients %}<span class="tag">{{ i }}</span>{% endfor %}</div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+
+  <form method="post" enctype="multipart/form-data" style="margin-top:14px;">
+    {% csrf_token %}
+    {{ recipe_form.as_p }}
+    <button type="submit" name="add_recipe" value="1">Enregistrer la recette</button>
+  </form>
+</div>
+{% endblock %}

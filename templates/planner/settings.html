@@ -1,0 +1,51 @@
+{% extends "planner/base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Réglages</h2>
+  <form method="post">
+    {% csrf_token %}
+    <div class="settingsrow">
+      <label>2ᵉ jour de télétravail</label>
+      <select name="tt2_day">
+        {% for d in days %}<option value="{{ d }}" {% if d == settings.tt2_day %}selected{% endif %}>{{ d|capfirst }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="settingsrow">
+      <label>Jour de courses</label>
+      <select name="courses_day">
+        {% for d in days %}<option value="{{ d }}" {% if d == settings.courses_day %}selected{% endif %}>{{ d|capfirst }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="settingsrow">
+      <label><input type="checkbox" name="papa_travaille" {% if settings.papa_travaille %}checked{% endif %}> Papa a repris le travail</label>
+    </div>
+    <div class="settingsrow">
+      <label>Note de la semaine</label>
+      <textarea name="week_note">{{ settings.week_note }}</textarea>
+    </div>
+    <button type="submit">Enregistrer</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Activités</h2>
+  {% for a in activities %}
+    <div class="pill">{{ a.get_person_display }} — {{ a.label }} — {{ a.get_day_display }}{% if a.time %} {{ a.time }}{% endif %}
+      <form method="post" action="{% url 'delete_activity' a.id %}" style="display:inline;">{% csrf_token %}
+        <button type="submit" class="delbtn">✕</button>
+      </form>
+    </div>
+  {% endfor %}
+  <form method="post" class="addrow" style="flex-wrap:wrap;margin-top:10px;">
+    {% csrf_token %}
+    <select name="act_person">
+      <option value="fille">Fille</option><option value="fils" selected>Fils</option>
+      <option value="maman">Maman</option><option value="papa">Papa</option>
+    </select>
+    <input type="text" name="act_label" placeholder="Activité">
+    <select name="act_day">{% for d in days %}<option value="{{ d }}">{{ d|capfirst }}</option>{% endfor %}</select>
+    <input type="text" name="act_time" placeholder="Heure">
+    <button type="submit" name="add_activity" value="1">Ajouter</button>
+  </form>
+</div>
+{% endblock %}

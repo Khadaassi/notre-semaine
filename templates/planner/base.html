@@ -1,0 +1,42 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Notre Semaine">
+<title>{% block title %}Notre Semaine{% endblock %}</title>
+<link rel="stylesheet" href="{% static 'planner/style.css' %}">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="title">
+      <div class="badge">NS</div>
+      <div>
+        <h1>Notre Semaine</h1>
+        <div class="sub">Routine familiale</div>
+      </div>
+    </div>
+    {% if user.is_authenticated %}
+      <form method="post" action="{% url 'logout' %}"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
+        <button type="submit" class="resetbtn">Déconnexion ({{ user.username }})</button>
+      </form>
+    {% endif %}
+  </header>
+
+  {% if user.is_authenticated %}
+  <nav class="tabs">
+    <a href="{% url 'today' %}" class="{% if request.resolver_match.url_name == 'today' %}active{% endif %}">Aujourd'hui</a>
+    <a href="{% url 'week' %}" class="{% if request.resolver_match.url_name == 'week' %}active{% endif %}">Semaine type</a>
+    <a href="{% url 'menu' %}" class="{% if request.resolver_match.url_name == 'menu' %}active{% endif %}">Menu</a>
+    <a href="{% url 'maison' %}" class="{% if request.resolver_match.url_name == 'maison' %}active{% endif %}">Maison</a>
+    <a href="{% url 'settings' %}" class="{% if request.resolver_match.url_name == 'settings' %}active{% endif %}">Réglages</a>
+  </nav>
+  {% endif %}
+
+  {% block content %}{% endblock %}
+</div>
+</body>
+</html>

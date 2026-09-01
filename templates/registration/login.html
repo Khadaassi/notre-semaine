@@ -1,0 +1,14 @@
+{% extends "planner/base.html" %}
+{% block content %}
+<div class="authbox">
+  <h1>Notre Semaine</h1>
+  <form method="post">
+    {% csrf_token %}
+    {% if form.errors %}<div class="err">Identifiants incorrects.</div>{% endif %}
+    <input type="text" name="username" placeholder="Nom d'utilisateur" required>
+    <input type="password" name="password" placeholder="Mot de passe" required>
+    <button type="submit">Se connecter</button>
+  </form>
+  <p style="text-align:center;margin-top:14px;"><a href="{% url 'signup' %}">Créer un compte</a></p>
+</div>
+{% endblock %}
