@@ -33,7 +33,7 @@ def signup(request):
         form = SignUpForm(request.POST)
         if form.is_valid():
             user = form.save()
-            FamilyMembership.objects.create(user=user, family=form.matched_family)
+            FamilyMembership.objects.create(user=user, family=form.matched_family, role=form.cleaned_data['role'])
             login(request, user)
             return redirect('today')
     else:
