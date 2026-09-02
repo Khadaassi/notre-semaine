@@ -6,7 +6,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Notre Semaine">
+<meta name="theme-color" content="#22364f">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2322364f'/%3E%3Ctext x='32' y='42' font-family='-apple-system,Arial,sans-serif' font-size='26' font-weight='800' fill='white' text-anchor='middle'%3ENS%3C/text%3E%3C/svg%3E">
 <title>{% block title %}Notre Semaine{% endblock %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Nunito:wght@500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{% static 'planner/style.css' %}">
 </head>
 <body>
@@ -21,18 +26,31 @@
     </div>
     {% if user.is_authenticated %}
       <form method="post" action="{% url 'logout' %}"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
-        <button type="submit" class="resetbtn">Déconnexion ({{ user.username }})</button>
+        <button type="submit" class="logoutbtn"><span class="nav-icon icon-logout"></span>{{ user.username }}</button>
       </form>
     {% endif %}
   </header>
 
+  {% if messages %}
+    {% for message in messages %}
+      <div class="flash {% if 'error' in message.tags %}error{% else %}success{% endif %}">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+
   {% if user.is_authenticated %}
   <nav class="tabs">
-    <a href="{% url 'today' %}" class="{% if request.resolver_match.url_name == 'today' %}active{% endif %}">Aujourd'hui</a>
-    <a href="{% url 'week' %}" class="{% if request.resolver_match.url_name == 'week' %}active{% endif %}">Semaine type</a>
-    <a href="{% url 'menu' %}" class="{% if request.resolver_match.url_name == 'menu' %}active{% endif %}">Menu</a>
-    <a href="{% url 'maison' %}" class="{% if request.resolver_match.url_name == 'maison' %}active{% endif %}">Maison</a>
-    <a href="{% url 'settings' %}" class="{% if request.resolver_match.url_name == 'settings' %}active{% endif %}">Réglages</a>
+    <a href="{% url 'today' %}" class="{% if request.resolver_match.url_name == 'today' %}active{% endif %}">
+      <span class="nav-icon icon-today"></span><span class="nav-label">Aujourd'hui</span></a>
+    <a href="{% url 'week' %}" class="{% if request.resolver_match.url_name == 'week' %}active{% endif %}">
+      <span class="nav-icon icon-organisation"></span><span class="nav-label">Organisation</span></a>
+    <a href="{% url 'menu' %}" class="{% if request.resolver_match.url_name == 'menu' %}active{% endif %}">
+      <span class="nav-icon icon-menu"></span><span class="nav-label">Menu</span></a>
+    <a href="{% url 'maison' %}" class="{% if request.resolver_match.url_name == 'maison' %}active{% endif %}">
+      <span class="nav-icon icon-maison"></span><span class="nav-label">Maison</span></a>
+    {% if request.user.familymembership.role != 'enfants' %}
+    <a href="{% url 'settings' %}" class="{% if request.resolver_match.url_name == 'settings' %}active{% endif %}">
+      <span class="nav-icon icon-reglages"></span><span class="nav-label">Réglages</span></a>
+    {% endif %}
   </nav>
   {% endif %}
 

@@ -5,6 +5,34 @@
   <form method="post">
     {% csrf_token %}
     <div class="settingsrow">
+      <label>Prénom de maman</label>
+      <input type="text" name="maman_name" value="{{ settings.maman_name }}">
+    </div>
+    <div class="settingsrow">
+      <label>Prénom de papa</label>
+      <input type="text" name="papa_name" value="{{ settings.papa_name }}">
+    </div>
+    <div class="settingsrow">
+      <label>Nombre d'enfants</label>
+      <select name="nb_enfants">
+        <option value="1" {% if settings.nb_enfants == 1 %}selected{% endif %}>1</option>
+        <option value="2" {% if settings.nb_enfants == 2 %}selected{% endif %}>2</option>
+      </select>
+    </div>
+    <div class="settingsrow">
+      <label>Prénom {% if settings.nb_enfants == 1 %}de l'enfant{% else %}enfant 1{% endif %}</label>
+      <input type="text" name="fille_name" value="{{ settings.fille_name }}">
+    </div>
+    {% if settings.nb_enfants == 2 %}
+    <div class="settingsrow">
+      <label>Prénom enfant 2</label>
+      <input type="text" name="fils_name" value="{{ settings.fils_name }}">
+    </div>
+    {% endif %}
+    <div class="settingsrow">
+      <label><input type="checkbox" name="maman_travaille" {% if settings.maman_travaille %}checked{% endif %}> Maman travaille</label>
+    </div>
+    <div class="settingsrow">
       <label>2ᵉ jour de télétravail</label>
       <select name="tt2_day">
         {% for d in days %}<option value="{{ d }}" {% if d == settings.tt2_day %}selected{% endif %}>{{ d|capfirst }}</option>{% endfor %}
@@ -30,8 +58,8 @@
 <div class="card">
   <h2>Activités</h2>
   {% for a in activities %}
-    <div class="pill">{{ a.get_person_display }} — {{ a.label }} — {{ a.get_day_display }}{% if a.time %} {{ a.time }}{% endif %}
-      <form method="post" action="{% url 'delete_activity' a.id %}" style="display:inline;">{% csrf_token %}
+    <div class="pill">{{ a.person_name }} — {{ a.label }} — {{ a.get_day_display }}{% if a.time %} {{ a.time }}{% endif %}
+      <form method="post" action="{% url 'delete_activity' a.id %}" style="display:inline;" onsubmit="return confirm('Supprimer cette activité ?');">{% csrf_token %}
         <button type="submit" class="delbtn">✕</button>
       </form>
     </div>
@@ -39,13 +67,58 @@
   <form method="post" class="addrow" style="flex-wrap:wrap;margin-top:10px;">
     {% csrf_token %}
     <select name="act_person">
-      <option value="fille">Fille</option><option value="fils" selected>Fils</option>
-      <option value="maman">Maman</option><option value="papa">Papa</option>
+      <option value="fille" selected>{{ settings.fille_name }}</option>
+      {% if settings.nb_enfants == 2 %}<option value="fils">{{ settings.fils_name }}</option>{% endif %}
+      <option value="maman">{{ settings.maman_name }}</option>
+      <option value="papa">{{ settings.papa_name }}</option>
     </select>
     <input type="text" name="act_label" placeholder="Activité">
     <select name="act_day">{% for d in days %}<option value="{{ d }}">{{ d|capfirst }}</option>{% endfor %}</select>
     <input type="text" name="act_time" placeholder="Heure">
     <button type="submit" name="add_activity" value="1">Ajouter</button>
   </form>
+</div>
+
+<div class="card">
+  <h2>Tâches personnalisées</h2>
+  <div class="hint">S'ajoutent à la routine habituelle, sans toucher au code.</div>
+  {% for c in custom_tasks %}
+    <div class="pill">{{ c.person_name }} — {{ c.label }} — {{ c.get_day_display }} ({{ c.get_period_display }})
+      <form method="post" action="{% url 'delete_custom_task' c.id %}" style="display:inline;" onsubmit="return confirm('Supprimer cette tâche ?');">{% csrf_token %}
+        <button type="submit" class="delbtn">✕</button>
+      </form>
+    </div>
+  {% endfor %}
+  <form method="post" class="addrow" style="flex-wrap:wrap;margin-top:10px;">
+    {% csrf_token %}
+    <select name="task_person">
+      <option value="fille">{{ settings.fille_name }}</option>
+      {% if settings.nb_enfants == 2 %}<option value="fils">{{ settings.fils_name }}</option>{% endif %}
+      <option value="maman">{{ settings.maman_name }}</option>
+      <option value="papa">{{ settings.papa_name }}</option>
+    </select>
+    <input type="text" name="task_label" placeholder="Tâche">
+    <select name="task_day">{% for d in days %}<option value="{{ d }}">{{ d|capfirst }}</option>{% endfor %}</select>
+    <select name="task_period">
+      <option value="matin">Matin</option>
+      <option value="journee">Journée</option>
+      <option value="soir">Soir</option>
+    </select>
+    <button type="submit" name="add_custom_task" value="1">Ajouter</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Membres de la famille</h2>
+  <div class="hint">Ces comptes ont accès à toutes les données ci-dessus.</div>
+  {% for m in members %}
+    <div class="pill">{{ m.user.username }} — {{ m.get_role_display }}{% if m.user == request.user %} (vous){% endif %}
+      {% if m.user != request.user %}
+        <form method="post" action="{% url 'remove_member' m.id %}" style="display:inline;" onsubmit="return confirm('Retirer {{ m.user.username }} de la famille ?');">{% csrf_token %}
+          <button type="submit" class="delbtn">✕</button>
+        </form>
+      {% endif %}
+    </div>
+  {% endfor %}
 </div>
 {% endblock %}

@@ -1,15 +1,20 @@
 {% extends "planner/base.html" %}
 {% block content %}
 <div class="card">
-  <h2>Vue d'ensemble</h2>
-  <div class="hint">Trame type de la semaine.</div>
+  <h2>Semainier</h2>
+  <div class="hint">{{ rotation_note }}</div>
   <div style="overflow-x:auto">
     <table class="weekgrid">
-      <tr><th>Créneau</th>{% for d in day_headers %}<th>{{ d }}</th>{% endfor %}</tr>
-      {% for row in table %}
+      <tr><th>Jour</th>{% for h in day_headers %}<th>{{ h }}</th>{% endfor %}</tr>
+      {% for row in table_rows %}
       <tr>
-        <td class="slot">{{ row.slot }}</td>
-        {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
+        <td class="slot"><span class="row-icon icon-{{ row.icon }}"></span>{{ row.slot }}</td>
+        {% for cell in row.cells %}
+          <td>
+            {% for line in cell %}{{ line }}{% if not forloop.last %}<br>{% endif %}{% endfor %}
+            {% if not cell %}—{% endif %}
+          </td>
+        {% endfor %}
       </tr>
       {% endfor %}
     </table>

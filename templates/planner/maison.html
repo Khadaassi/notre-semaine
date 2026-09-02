@@ -1,21 +1,32 @@
 {% extends "planner/base.html" %}
 {% block content %}
+{% if settings.nb_enfants == 1 %}
+<div class="card">
+  <h2>Ménage</h2>
+  <div class="hint">{{ settings.fille_name }} s'occupe de la table et du lave-vaisselle.</div>
+</div>
+{% else %}
 <div class="card">
   <h2>Rotation ménage (enfants)</h2>
   <div class="hint">Appuyez pour alterner.</div>
   <div class="rotation">
     <div><div class="who">{% if settings.rotation_table == 'fille' %}{{ settings.fille_name }}{% else %}{{ settings.fils_name }}{% endif %}</div>
       <div style="font-size:12px;color:var(--muted)">Responsable de la table</div></div>
+    {% if request.user.familymembership.role != 'enfants' %}
     <form method="post" action="{% url 'toggle_rotation' %}">{% csrf_token %}<input type="hidden" name="which" value="table">
       <button type="submit">Changer</button></form>
+    {% endif %}
   </div>
   <div class="rotation">
     <div><div class="who">{% if settings.rotation_lave_vaisselle == 'fille' %}{{ settings.fille_name }}{% else %}{{ settings.fils_name }}{% endif %}</div>
       <div style="font-size:12px;color:var(--muted)">Responsable du lave-vaisselle</div></div>
+    {% if request.user.familymembership.role != 'enfants' %}
     <form method="post" action="{% url 'toggle_rotation' %}">{% csrf_token %}<input type="hidden" name="which" value="lv">
       <button type="submit">Changer</button></form>
+    {% endif %}
   </div>
 </div>
+{% endif %}
 
 <div class="card">
   <h2>Le linge</h2>
@@ -49,11 +60,18 @@
 const CSRF = "{{ csrf_token }}";
 document.querySelectorAll('.course-toggle').forEach(cb=>{
   cb.addEventListener('change', ()=>{
-    cb.closest('.task').classList.toggle('done', cb.checked);
+    const wasChecked = cb.checked;
+    cb.closest('.task').classList.toggle('done', wasChecked);
     const fd = new FormData();
     fd.append('item_id', cb.dataset.id);
-    fd.append('checked', cb.checked?'1':'0');
-    fetch("{% url 'toggle_grocery' %}", {method:'POST', headers:{'X-CSRFToken':CSRF}, body: fd});
+    fd.append('checked', wasChecked?'1':'0');
+    fetch("{% url 'toggle_grocery' %}", {method:'POST', headers:{'X-CSRFToken':CSRF}, body: fd})
+      .then(r=>{ if(!r.ok) throw new Error(); })
+      .catch(()=>{
+        cb.checked = !wasChecked;
+        cb.closest('.task').classList.toggle('done', cb.checked);
+        alert("Échec de l'enregistrement, réessayez.");
+      });
   });
 });
 </script>

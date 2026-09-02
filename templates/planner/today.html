@@ -1,5 +1,6 @@
 {% extends "planner/base.html" %}
 {% block content %}
+<div class="hint" style="margin-top:-6px;">{{ real_date|date:"l j F Y"|capfirst }}</div>
 <div class="dayrow">
   {% for c in day_chips %}
     <a class="daychip {% if c.is_selected %}active{% endif %}" href="?day={{ c.key }}">
@@ -9,40 +10,48 @@
 </div>
 
 <div class="kidgrid">
-  {% for card in cards|slice:":2" %}
+  {% for card in kid_cards %}
   <div class="kidcard {{ card.person }}">
     <div class="head"><span>{{ card.name }}</span><span>{{ card.pct }}%</span></div>
     <div class="progressbar"><div style="width:{{ card.pct }}%"></div></div>
-    {% for task in card.tasks %}
-      {% if task.info %}
-        <div class="task info"><span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label></div>
-      {% else %}
-        <div class="task {% if task.done %}done{% endif %}">
-          <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
-                 {% if task.done %}checked{% endif %} class="task-toggle">
-          <label>{{ task.label }}</label>
-        </div>
-      {% endif %}
+    {% for phase_key, phase_label, tasks in card.phases %}
+      <h3 class="phase-h"><span class="phase-icon icon-{{ phase_key }}"></span>{{ phase_label }}</h3>
+      {% for task in tasks %}
+        {% if task.info %}
+          <div class="task info"><span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label></div>
+        {% else %}
+          <div class="task {% if task.done %}done{% endif %}">
+            <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
+                   {% if task.done %}checked{% endif %} {% if not card.checkable_by_viewer %}disabled{% endif %}
+                   class="task-toggle">
+            <label>{{ task.label }}</label>
+          </div>
+        {% endif %}
+      {% endfor %}
     {% endfor %}
   </div>
   {% endfor %}
 </div>
 
 <div class="parentgrid">
-  {% for card in cards|slice:"2:" %}
+  {% for card in parent_cards %}
   <div class="kidcard {{ card.person }}">
     <div class="head"><span>{{ card.name }}</span><span>{{ card.pct }}%</span></div>
     <div class="progressbar"><div style="width:{{ card.pct }}%"></div></div>
-    {% for task in card.tasks %}
-      {% if task.info %}
-        <div class="task info"><span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label></div>
-      {% else %}
-        <div class="task {% if task.done %}done{% endif %}">
-          <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
-                 {% if task.done %}checked{% endif %} class="task-toggle">
-          <label>{{ task.label }}</label>
-        </div>
-      {% endif %}
+    {% for phase_key, phase_label, tasks in card.phases %}
+      <h3 class="phase-h"><span class="phase-icon icon-{{ phase_key }}"></span>{{ phase_label }}</h3>
+      {% for task in tasks %}
+        {% if task.info %}
+          <div class="task info"><span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label></div>
+        {% else %}
+          <div class="task {% if task.done %}done{% endif %}">
+            <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
+                   {% if task.done %}checked{% endif %} {% if not card.checkable_by_viewer %}disabled{% endif %}
+                   class="task-toggle">
+            <label>{{ task.label }}</label>
+          </div>
+        {% endif %}
+      {% endfor %}
     {% endfor %}
   </div>
   {% endfor %}
@@ -51,15 +60,88 @@
 <script>
 const CSRF = "{{ csrf_token }}";
 const DAY = "{{ day }}";
+
+const CONGRATS_NEUTRAL = [
+  "Bravo !", "Bien joué !", "Bravo, journée réussie !",
+  "Toutes tes tâches sont faites, bravo !", "Super travail aujourd'hui !",
+  "Continue comme ça, c'est génial !",
+];
+const CONGRATS_GENDERED = {
+  fille: ["Sois fière de toi !", "Je suis fière de toi !", "Championne du jour !"],
+  fils: ["Sois fier de toi !", "Je suis fier de toi !", "Champion du jour !"],
+};
+const CONFETTI_COLORS = ['var(--coral)', 'var(--mint)', 'var(--sun)', 'var(--plum)', 'var(--navy-2)'];
+
+function randomCongrats(person) {
+  const pool = CONGRATS_NEUTRAL.concat(CONGRATS_GENDERED[person] || []);
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function isCardComplete(person) {
+  const boxes = document.querySelectorAll(`.task-toggle[data-person="${person}"]`);
+  return boxes.length > 0 && Array.from(boxes).every(cb => cb.checked);
+}
+
+function updateProgress(person) {
+  const boxes = document.querySelectorAll(`.task-toggle[data-person="${person}"]`);
+  if (!boxes.length) return;
+  const done = Array.from(boxes).filter(cb => cb.checked).length;
+  const pct = Math.round((done / boxes.length) * 100);
+  const card = document.querySelector(`.kidcard.${person}`);
+  card.querySelector('.head span:last-child').textContent = pct + '%';
+  card.querySelector('.progressbar > div').style.width = pct + '%';
+}
+
+const celebrated = {};
+
+function celebrate(person) {
+  const overlay = document.createElement('div');
+  overlay.className = 'celebrate-overlay';
+  overlay.innerHTML = `<div class="celebrate-card ${person}"><div class="celebrate-msg"></div></div>`;
+  overlay.querySelector('.celebrate-msg').textContent = randomCongrats(person);
+  for (let i = 0; i < 28; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece';
+    piece.style.left = (Math.random() * 100) + 'vw';
+    piece.style.setProperty('--delay', (Math.random() * 0.6) + 's');
+    piece.style.setProperty('--duration', (2 + Math.random() * 1.2) + 's');
+    piece.style.setProperty('--rot', (Math.random() * 360) + 'deg');
+    piece.style.background = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
+    overlay.appendChild(piece);
+  }
+  document.body.appendChild(overlay);
+  const dismiss = () => { overlay.classList.add('fade-out'); setTimeout(() => overlay.remove(), 300); };
+  overlay.addEventListener('click', dismiss);
+  setTimeout(dismiss, 2800);
+}
+
 document.querySelectorAll('.task-toggle').forEach(cb=>{
   cb.addEventListener('change', ()=>{
-    cb.closest('.task').classList.toggle('done', cb.checked);
+    const wasChecked = cb.checked;
+    const person = cb.dataset.person;
+    cb.closest('.task').classList.toggle('done', wasChecked);
+    updateProgress(person);
     const fd = new FormData();
-    fd.append('person', cb.dataset.person);
+    fd.append('person', person);
     fd.append('task_id', cb.dataset.task);
     fd.append('day', DAY);
-    fd.append('done', cb.checked ? '1' : '0');
-    fetch("{% url 'toggle_task' %}", {method:'POST', headers:{'X-CSRFToken':CSRF}, body: fd});
+    fd.append('done', wasChecked ? '1' : '0');
+    if (!wasChecked) celebrated[person] = false;
+    fetch("{% url 'toggle_task' %}", {method:'POST', headers:{'X-CSRFToken':CSRF}, body: fd})
+      .then(r=>{
+        if(!r.ok) throw new Error();
+        if (wasChecked && (person === 'fille' || person === 'fils') &&
+            isCardComplete(person) && !celebrated[person]) {
+          celebrated[person] = true;
+          celebrate(person);
+        }
+      })
+      .catch(()=>{
+        cb.checked = !wasChecked;
+        cb.closest('.task').classList.toggle('done', cb.checked);
+        updateProgress(person);
+        alert("Échec de l'enregistrement, réessayez.");
+      });
   });
 });
 </script>

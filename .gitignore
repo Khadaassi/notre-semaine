@@ -7,3 +7,5 @@ media/
 venv/
 env/
 *.egg-info/
+
+graphify-out/

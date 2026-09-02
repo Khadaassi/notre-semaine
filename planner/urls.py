@@ -13,5 +13,7 @@ urlpatterns = [
     path('menu/', views.menu, name='menu'),
     path('reglages/', views.settings_view, name='settings'),
     path('reglages/activite/<int:pk>/supprimer/', views.delete_activity, name='delete_activity'),
+    path('reglages/tache/<int:pk>/supprimer/', views.delete_custom_task, name='delete_custom_task'),
+    path('reglages/membre/<int:pk>/retirer/', views.remove_member, name='remove_member'),
     path('inscription/', views.signup, name='signup'),
 ]

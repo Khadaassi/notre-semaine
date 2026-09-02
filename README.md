@@ -11,10 +11,14 @@ par un code d'invitation familial.
 python3 -m venv venv
 source venv/bin/activate          # Windows : venv\Scripts\activate
 pip install -r requirements.txt
+cp .env.example .env              # puis éditez .env (SECRET_KEY, code d'invitation...)
 python manage.py migrate
 python manage.py createsuperuser  # optionnel, pour l'admin Django
 python manage.py runserver
 ```
+
+Le fichier `.env` (jamais commité, voir `.gitignore`) contient vos réglages locaux —
+`DEBUG`, `SECRET_KEY`, `FAMILY_INVITE_CODE`. `.env.example` sert de modèle sans secrets.
 
 Ouvrez http://127.0.0.1:8000 — la première visite propose de créer un compte
 (`/inscription/`) avec le code d'invitation défini dans `FAMILY_INVITE_CODE`

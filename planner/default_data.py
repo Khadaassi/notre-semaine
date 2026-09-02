@@ -53,7 +53,4 @@ DEFAULT_GROCERY = [
     ('Hygiène & entretien', ['Produit vaisselle', 'Lessive', 'Papier toilette', 'Savon']),
 ]
 
-DEFAULT_ACTIVITIES = [
-    {'person': 'fils', 'label': 'Lutte', 'day': 'lundi', 'time': '19h30'},
-    {'person': 'fils', 'label': 'Lutte', 'day': 'mercredi', 'time': '19h30'},
-]
+DEFAULT_ACTIVITIES = []
