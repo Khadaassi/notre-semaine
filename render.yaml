@@ -3,7 +3,7 @@ services:
     name: notre-semaine
     env: python
     plan: free
-    buildCommand: "pip install -r requirements.txt && python manage.py collectstatic --noinput"
+    buildCommand: "pip install -r requirements.txt && python manage.py migrate --noinput && python manage.py collectstatic --noinput"
     startCommand: "gunicorn config.wsgi --log-file -"
     envVars:
       - key: SECRET_KEY
