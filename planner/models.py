@@ -87,12 +87,61 @@ class TaskCompletion(models.Model):
     date = models.DateField()
     task_id = models.CharField(max_length=60)
     done = models.BooleanField(default=False)
+    seconds_spent = models.PositiveIntegerField(default=0)
+    timer_started_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         unique_together = ('family', 'person', 'date', 'task_id')
 
     def __str__(self):
         return f"{self.person} {self.date} {self.task_id}={self.done}"
+
+
+class TaskOrder(models.Model):
+    """Per-family, per-person custom display order for a task_id — lets whoever may edit a
+    card's tasks (see checkable_by_viewer in views.today) drag the routine into their own
+    order without touching the generated task list itself."""
+    family = models.ForeignKey(Family, on_delete=models.CASCADE)
+    person = models.CharField(max_length=10, choices=PERSON_CHOICES)
+    task_id = models.CharField(max_length=60)
+    order = models.IntegerField(default=0)
+
+    class Meta:
+        unique_together = ('family', 'person', 'task_id')
+
+    def __str__(self):
+        return f"{self.person} {self.task_id} → {self.order}"
+
+
+class StarAward(models.Model):
+    """One row per day a kid fully completed every checkable task — the audit trail behind
+    KidStars.total, and what stops the same day from awarding a star twice."""
+    family = models.ForeignKey(Family, on_delete=models.CASCADE)
+    person = models.CharField(max_length=10, choices=PERSON_CHOICES)
+    date = models.DateField()
+
+    class Meta:
+        unique_together = ('family', 'person', 'date')
+
+    def __str__(self):
+        return f"{self.person} {self.date}"
+
+
+class KidStars(models.Model):
+    """Cumulative reward-star count per kid. Individual stars aren't shown to the kid —
+    only the milestone (every STAR_MILESTONE, see views.py) surfaces as a surprise."""
+    family = models.ForeignKey(Family, on_delete=models.CASCADE)
+    person = models.CharField(max_length=10, choices=PERSON_CHOICES)
+    total = models.PositiveIntegerField(default=0)
+    milestones_shown = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = ('family', 'person')
+        verbose_name = "Étoiles"
+        verbose_name_plural = "Étoiles"
+
+    def __str__(self):
+        return f"{self.person}: {self.total} étoile(s)"
 
 
 class Recipe(models.Model):

@@ -47,6 +47,8 @@
       <span class="nav-icon icon-menu"></span><span class="nav-label">Menu</span></a>
     <a href="{% url 'maison' %}" class="{% if request.resolver_match.url_name == 'maison' %}active{% endif %}">
       <span class="nav-icon icon-maison"></span><span class="nav-label">Maison</span></a>
+    <a href="{% url 'stars' %}" class="{% if request.resolver_match.url_name == 'stars' %}active{% endif %}">
+      <span class="nav-icon icon-etoile"></span><span class="nav-label">Étoiles</span></a>
     {% if request.user.familymembership.role != 'enfants' %}
     <a href="{% url 'settings' %}" class="{% if request.resolver_match.url_name == 'settings' %}active{% endif %}">
       <span class="nav-icon icon-reglages"></span><span class="nav-label">Réglages</span></a>

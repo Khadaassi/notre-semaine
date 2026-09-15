@@ -1,0 +1,28 @@
+{% extends "planner/base.html" %}
+{% block content %}
+<div class="hint" style="margin-top:-6px;">Une étoile par journée entièrement cochée. Tous les {{ trackers.0.milestone|default:15 }} étoiles, une surprise !</div>
+
+{% for t in trackers %}
+<div class="card starcard {{ t.person }}">
+  <div class="head-row">
+    <h2 class="person-name {{ t.person }}">{{ t.name }}
+      <span class="level-badge"><span class="lvl-star icon-etoile"></span>Niv. {{ t.level }}</span>
+    </h2>
+    <span class="totalpill">{{ t.total }} étoile{{ t.total|pluralize }}</span>
+  </div>
+  <div class="progressbar"><div style="width:{% widthratio t.in_cycle t.milestone 100 %}%"></div></div>
+  <div class="cycle-hint">
+    {{ t.in_cycle }}/{{ t.milestone }} jusqu'à la prochaine surprise
+    {% if t.streak > 1 %} · {{ t.streak }} jours d'affilée{% endif %}
+  </div>
+  <div class="streakgrid">
+    {% for d in t.days %}
+      <span class="streakday {{ t.person }} {% if d.filled %}filled{% endif %} {% if d.is_today %}today{% endif %}"
+            title="{{ d.date|date:'l j F' }}{% if d.filled %} — journée complétée{% endif %}"></span>
+    {% endfor %}
+  </div>
+</div>
+{% empty %}
+<div class="card"><div class="hint">Pas encore d'enfant configuré.</div></div>
+{% endfor %}
+{% endblock %}

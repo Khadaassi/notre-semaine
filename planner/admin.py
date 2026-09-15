@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
     Family, FamilyMembership, FamilySettings, Activity, TaskCompletion, Recipe,
-    WeeklyMenuEntry, CustomTask, GroceryItem,
+    WeeklyMenuEntry, CustomTask, GroceryItem, TaskOrder, StarAward, KidStars,
 )
 
 
@@ -24,3 +24,6 @@ admin.site.register(Recipe)
 admin.site.register(WeeklyMenuEntry)
 admin.site.register(CustomTask)
 admin.site.register(GroceryItem)
+admin.site.register(TaskOrder)
+admin.site.register(StarAward)
+admin.site.register(KidStars)

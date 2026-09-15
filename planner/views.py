@@ -9,6 +9,7 @@ from django.contrib.auth.views import LoginView
 from django.core.exceptions import PermissionDenied
 from django.http import JsonResponse
 from django.shortcuts import render, redirect
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.http import require_POST
 from django_ratelimit.decorators import ratelimit
@@ -16,15 +17,21 @@ from django_ratelimit.decorators import ratelimit
 from .forms import SignUpForm, RecipeForm
 from .models import (
     FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem, CustomTask,
-    FamilyMembership, PARENT_ROLES,
+    FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars,
 )
 from .task_logic import (
     DAYS, DAY_FULL, tasks_for, next_day, pillar_for, is_zone_b_holiday, DEEP_CLEAN_ROOMS,
-    group_by_phase,
+    group_by_phase, apply_order,
 )
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
 
 PERSON_LABELS_STATIC = {'maman': 'Maman'}
+STAR_MILESTONE = 15  # every Nth fully-completed day surfaces the surprise reward popup
+STARS_PER_LEVEL = STAR_MILESTONE * 6  # cosmetic "Niv." badge — one level per 6 surprises (~12 weeks)
+
+
+def _level_for(total_stars):
+    return total_stars // STARS_PER_LEVEL + 1
 
 
 @ratelimit(key='ip', rate='10/h', method='POST', block=True)
@@ -65,6 +72,11 @@ def parent_required(view_func):
 
 def _monday_of(d):
     return d - datetime.timedelta(days=d.weekday())
+
+
+def _real_date_for_day(day):
+    today_idx = datetime.date.today().weekday()
+    return datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
 
 
 def _ensure_seed_data(family):
@@ -111,24 +123,41 @@ def today(request):
 
     people = _family_people(settings)
     is_parent = _is_parent(request)
+    orders = {}
+    for o in TaskOrder.objects.filter(family=family):
+        orders.setdefault(o.person, {})[o.task_id] = o.order
+    levels = {s.person: _level_for(s.total) for s in KidStars.objects.filter(family=family)}
+
     cards = []
     for person in people:
         task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow, custom_tasks)
         completions = {
-            tc.task_id: tc.done
+            tc.task_id: tc
             for tc in TaskCompletion.objects.filter(family=family, person=person, date=real_date)
         }
-        checkable = [x for x in task_list if not x['info']]
-        done_count = sum(1 for x in checkable if completions.get(x['id']))
-        pct = round(done_count / len(checkable) * 100) if checkable else 0
         for x in task_list:
-            x['done'] = completions.get(x['id'], False)
+            tc = completions.get(x['id'])
+            x['done'] = tc.done if tc else False
+            x['seconds_spent'] = tc.seconds_spent if tc else 0
+            x['timer_running'] = bool(tc and tc.timer_started_at)
+            x['timer_started_ms'] = int(tc.timer_started_at.timestamp() * 1000) if (tc and tc.timer_started_at) else None
+        phases = [(pk, pl, apply_order(ts, orders.get(person, {}))) for pk, pl, ts in group_by_phase(task_list)]
+        phase_cards = []
+        for phase_key, phase_label, tasks in phases:
+            checkable = [x for x in tasks if not x['info']]
+            done_count = sum(1 for x in checkable if x['done'])
+            phase_cards.append({
+                'phase_key': phase_key,
+                'phase_label': phase_label,
+                'tasks': tasks,
+                'pct': round(done_count / len(checkable) * 100) if checkable else 0,
+            })
         cards.append({
             'person': person,
             'name': _person_label(person, settings),
-            'phases': group_by_phase(task_list),
-            'pct': pct,
+            'phase_cards': phase_cards,
             'checkable_by_viewer': is_parent or person in ('fille', 'fils'),
+            'level': levels.get(person, 1) if person in ('fille', 'fils') else None,
         })
 
     day_chips = [{'key': d, 'label': DAY_FULL[d], 'full': DAY_FULL[d],
@@ -136,12 +165,48 @@ def today(request):
                  for i, d in enumerate(DAYS)]
 
     kid_cards = [c for c in cards if c['person'] in ('fille', 'fils')]
-    parent_cards = [c for c in cards if c['person'] in ('maman', 'papa')]
+    parent_cards = [c for c in cards if c['person'] in ('maman', 'papa')] if is_parent else []
 
     return render(request, 'planner/today.html', {
         'kid_cards': kid_cards, 'parent_cards': parent_cards, 'day': day, 'day_chips': day_chips,
         'real_date': real_date, 'settings': settings,
     })
+
+
+def _checkable_ids_for(person, day, family):
+    settings = FamilySettings.load(family)
+    activities = list(Activity.objects.filter(family=family))
+    custom_tasks = list(CustomTask.objects.filter(family=family))
+    real_date = _real_date_for_day(day)
+    holiday_today = is_zone_b_holiday(real_date)
+    holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
+    task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow, custom_tasks)
+    return {x['id'] for x in task_list if not x['info']}
+
+
+def _award_star_if_day_complete(family, person, day, real_date):
+    """Called after a kid's task is checked off. If that completes every checkable task for
+    the day, silently banks one star (see StarAward/KidStars) and reports whether this star
+    just crossed a STAR_MILESTONE threshold — the one moment the kid actually sees anything."""
+    checkable_ids = _checkable_ids_for(person, day, family)
+    if not checkable_ids:
+        return False, None
+    done_ids = set(TaskCompletion.objects.filter(
+        family=family, person=person, date=real_date, done=True
+    ).values_list('task_id', flat=True))
+    if not checkable_ids.issubset(done_ids):
+        return False, None
+    _, created = StarAward.objects.get_or_create(family=family, person=person, date=real_date)
+    if not created:
+        return False, None
+    stars, _ = KidStars.objects.get_or_create(family=family, person=person)
+    stars.total += 1
+    reached = stars.total // STAR_MILESTONE
+    milestone_reached = reached > stars.milestones_shown
+    if milestone_reached:
+        stars.milestones_shown = reached
+    stars.save()
+    return milestone_reached, stars.total
 
 
 @login_required
@@ -154,12 +219,93 @@ def toggle_task(request):
     task_id = request.POST['task_id']
     day = request.POST['day']
     done = request.POST['done'] == '1'
-    today_idx = datetime.date.today().weekday()
-    real_date = datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
+    real_date = _real_date_for_day(day)
     TaskCompletion.objects.update_or_create(
         family=family, person=person, date=real_date, task_id=task_id, defaults={'done': done}
     )
+    milestone_reached, stars_total = False, None
+    if done and person in ('fille', 'fils'):
+        milestone_reached, stars_total = _award_star_if_day_complete(family, person, day, real_date)
+    return JsonResponse({'ok': True, 'milestone_reached': milestone_reached, 'stars_total': stars_total})
+
+
+@login_required
+@require_POST
+def timer_task(request):
+    family = _get_family(request)
+    person = request.POST['person']
+    if not _is_parent(request) and person not in ('fille', 'fils'):
+        raise PermissionDenied
+    task_id = request.POST['task_id']
+    day = request.POST['day']
+    action = request.POST.get('action')
+    if day not in DAYS or action not in ('start', 'stop'):
+        return JsonResponse({'ok': False}, status=400)
+    real_date = _real_date_for_day(day)
+    tc, _ = TaskCompletion.objects.get_or_create(family=family, person=person, date=real_date, task_id=task_id)
+    now = timezone.now()
+    if action == 'start' and not tc.timer_started_at:
+        tc.timer_started_at = now
+        tc.save(update_fields=['timer_started_at'])
+    elif action == 'stop' and tc.timer_started_at:
+        elapsed = max(0, int((now - tc.timer_started_at).total_seconds()))
+        tc.seconds_spent += elapsed
+        tc.timer_started_at = None
+        tc.save(update_fields=['seconds_spent', 'timer_started_at'])
+    return JsonResponse({
+        'ok': True,
+        'seconds_spent': tc.seconds_spent,
+        'running': tc.timer_started_at is not None,
+        'started_at_ms': int(tc.timer_started_at.timestamp() * 1000) if tc.timer_started_at else None,
+    })
+
+
+@login_required
+@require_POST
+def reorder_tasks(request):
+    family = _get_family(request)
+    person = request.POST.get('person')
+    if not _is_parent(request) and person not in ('fille', 'fils'):
+        raise PermissionDenied
+    task_ids = [tid for tid in request.POST.getlist('task_ids[]') if tid]
+    for idx, task_id in enumerate(task_ids):
+        TaskOrder.objects.update_or_create(
+            family=family, person=person, task_id=task_id, defaults={'order': idx}
+        )
     return JsonResponse({'ok': True})
+
+
+@login_required
+def stars_view(request):
+    family = _get_family(request)
+    settings = FamilySettings.load(family)
+    kids = [p for p in _family_people(settings) if p in ('fille', 'fils')]
+    today = datetime.date.today()
+    days = [today - datetime.timedelta(days=i) for i in range(27, -1, -1)]
+
+    trackers = []
+    for kid in kids:
+        stars, _ = KidStars.objects.get_or_create(family=family, person=kid)
+        awarded_dates = set(StarAward.objects.filter(
+            family=family, person=kid, date__gte=days[0]
+        ).values_list('date', flat=True))
+        streak = 0
+        cursor = today
+        while cursor in awarded_dates:
+            streak += 1
+            cursor -= datetime.timedelta(days=1)
+        trackers.append({
+            'person': kid,
+            'name': _person_label(kid, settings),
+            'total': stars.total,
+            'level': _level_for(stars.total),
+            'in_cycle': stars.total % STAR_MILESTONE,
+            'milestone': STAR_MILESTONE,
+            'streak': streak,
+            'days': [{'date': d, 'filled': d in awarded_dates, 'is_today': d == today} for d in days],
+        })
+
+    return render(request, 'planner/stars.html', {'trackers': trackers})
 
 
 def _day_type_label(d, holiday):

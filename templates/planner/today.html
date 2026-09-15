@@ -11,51 +11,105 @@
 
 <div class="kidgrid">
   {% for card in kid_cards %}
-  <div class="kidcard {{ card.person }}">
-    <div class="head"><span>{{ card.name }}</span><span>{{ card.pct }}%</span></div>
-    <div class="progressbar"><div style="width:{{ card.pct }}%"></div></div>
-    {% for phase_key, phase_label, tasks in card.phases %}
-      <h3 class="phase-h"><span class="phase-icon icon-{{ phase_key }}"></span>{{ phase_label }}</h3>
-      {% for task in tasks %}
-        {% if task.info %}
-          <div class="task info"><span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label></div>
-        {% else %}
-          <div class="task {% if task.done %}done{% endif %}">
-            <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
-                   {% if task.done %}checked{% endif %} {% if not card.checkable_by_viewer %}disabled{% endif %}
-                   class="task-toggle">
-            <label>{{ task.label }}</label>
-          </div>
-        {% endif %}
-      {% endfor %}
+  <div class="person-col">
+    <h2 class="person-name {{ card.person }}">{{ card.name }}
+      {% if card.level %}<span class="level-badge"><span class="lvl-star icon-etoile"></span>Niv. {{ card.level }}</span>{% endif %}
+    </h2>
+    {% for pc in card.phase_cards %}
+    <div class="kidcard {{ card.person }}" data-person="{{ card.person }}" data-phase="{{ pc.phase_key }}">
+      <div class="head"><span><span class="phase-icon icon-{{ pc.phase_key }}"></span>{{ pc.phase_label }}</span><span class="pct-badge">{{ pc.pct }}%</span></div>
+      <div class="progressbar"><div style="width:{{ pc.pct }}%"></div></div>
+      <div class="phase-block">
+        {% for task in pc.tasks %}
+          {% if task.info %}
+            <div class="task info" data-task-row data-task-id="{{ task.id }}" data-person="{{ card.person }}">
+              <span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label>
+              {% if card.checkable_by_viewer %}
+              <span class="reorder-btns">
+                <button type="button" class="orderbtn" data-dir="up" aria-label="Monter">▲</button>
+                <button type="button" class="orderbtn" data-dir="down" aria-label="Descendre">▼</button>
+              </span>
+              {% endif %}
+            </div>
+          {% else %}
+            <div class="task {% if task.done %}done{% endif %}" data-task-row data-task-id="{{ task.id }}" data-person="{{ card.person }}">
+              <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
+                     {% if task.done %}checked{% endif %} {% if not card.checkable_by_viewer %}disabled{% endif %}
+                     class="task-toggle">
+              <label>{{ task.label }}</label>
+              {% if card.checkable_by_viewer %}
+              <button type="button" class="timerbtn {% if task.timer_running %}running{% endif %}"
+                      data-person="{{ card.person }}" data-task="{{ task.id }}"
+                      data-seconds="{{ task.seconds_spent }}" data-running="{% if task.timer_running %}1{% else %}0{% endif %}"
+                      data-started="{{ task.timer_started_ms|default_if_none:'' }}" aria-label="Minuteur">
+                <span class="row-icon icon-clock"></span><span class="timer-label"></span>
+              </button>
+              <span class="reorder-btns">
+                <button type="button" class="orderbtn" data-dir="up" aria-label="Monter">▲</button>
+                <button type="button" class="orderbtn" data-dir="down" aria-label="Descendre">▼</button>
+              </span>
+              {% endif %}
+            </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </div>
     {% endfor %}
   </div>
   {% endfor %}
 </div>
 
+{% if parent_cards %}
 <div class="parentgrid">
   {% for card in parent_cards %}
-  <div class="kidcard {{ card.person }}">
-    <div class="head"><span>{{ card.name }}</span><span>{{ card.pct }}%</span></div>
-    <div class="progressbar"><div style="width:{{ card.pct }}%"></div></div>
-    {% for phase_key, phase_label, tasks in card.phases %}
-      <h3 class="phase-h"><span class="phase-icon icon-{{ phase_key }}"></span>{{ phase_label }}</h3>
-      {% for task in tasks %}
-        {% if task.info %}
-          <div class="task info"><span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label></div>
-        {% else %}
-          <div class="task {% if task.done %}done{% endif %}">
-            <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
-                   {% if task.done %}checked{% endif %} {% if not card.checkable_by_viewer %}disabled{% endif %}
-                   class="task-toggle">
-            <label>{{ task.label }}</label>
-          </div>
-        {% endif %}
-      {% endfor %}
+  <div class="person-col">
+    <h2 class="person-name {{ card.person }}">{{ card.name }}
+      {% if card.level %}<span class="level-badge"><span class="lvl-star icon-etoile"></span>Niv. {{ card.level }}</span>{% endif %}
+    </h2>
+    {% for pc in card.phase_cards %}
+    <div class="kidcard {{ card.person }}" data-person="{{ card.person }}" data-phase="{{ pc.phase_key }}">
+      <div class="head"><span><span class="phase-icon icon-{{ pc.phase_key }}"></span>{{ pc.phase_label }}</span><span class="pct-badge">{{ pc.pct }}%</span></div>
+      <div class="progressbar"><div style="width:{{ pc.pct }}%"></div></div>
+      <div class="phase-block">
+        {% for task in pc.tasks %}
+          {% if task.info %}
+            <div class="task info" data-task-row data-task-id="{{ task.id }}" data-person="{{ card.person }}">
+              <span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label>
+              {% if card.checkable_by_viewer %}
+              <span class="reorder-btns">
+                <button type="button" class="orderbtn" data-dir="up" aria-label="Monter">▲</button>
+                <button type="button" class="orderbtn" data-dir="down" aria-label="Descendre">▼</button>
+              </span>
+              {% endif %}
+            </div>
+          {% else %}
+            <div class="task {% if task.done %}done{% endif %}" data-task-row data-task-id="{{ task.id }}" data-person="{{ card.person }}">
+              <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
+                     {% if task.done %}checked{% endif %} {% if not card.checkable_by_viewer %}disabled{% endif %}
+                     class="task-toggle">
+              <label>{{ task.label }}</label>
+              {% if card.checkable_by_viewer %}
+              <button type="button" class="timerbtn {% if task.timer_running %}running{% endif %}"
+                      data-person="{{ card.person }}" data-task="{{ task.id }}"
+                      data-seconds="{{ task.seconds_spent }}" data-running="{% if task.timer_running %}1{% else %}0{% endif %}"
+                      data-started="{{ task.timer_started_ms|default_if_none:'' }}" aria-label="Minuteur">
+                <span class="row-icon icon-clock"></span><span class="timer-label"></span>
+              </button>
+              <span class="reorder-btns">
+                <button type="button" class="orderbtn" data-dir="up" aria-label="Monter">▲</button>
+                <button type="button" class="orderbtn" data-dir="down" aria-label="Descendre">▼</button>
+              </span>
+              {% endif %}
+            </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </div>
     {% endfor %}
   </div>
   {% endfor %}
 </div>
+{% endif %}
 
 <script>
 const CSRF = "{{ csrf_token }}";
@@ -71,77 +125,197 @@ const CONGRATS_GENDERED = {
   fils: ["Sois fier de toi !", "Je suis fier de toi !", "Champion du jour !"],
 };
 const CONFETTI_COLORS = ['var(--coral)', 'var(--mint)', 'var(--sun)', 'var(--plum)', 'var(--navy-2)'];
+const MILESTONE_MSG = "Bravo, tu as complété une série entière ! Pour te féliciter, Maman et Papa ont un cadeau pour toi !";
 
 function randomCongrats(person) {
   const pool = CONGRATS_NEUTRAL.concat(CONGRATS_GENDERED[person] || []);
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-function isCardComplete(person) {
-  const boxes = document.querySelectorAll(`.task-toggle[data-person="${person}"]`);
-  return boxes.length > 0 && Array.from(boxes).every(cb => cb.checked);
+function spawnConfetti(overlay, count, star) {
+  for (let i = 0; i < count; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece' + (star ? ' star' : '');
+    piece.style.left = (Math.random() * 100) + 'vw';
+    piece.style.setProperty('--delay', (Math.random() * 0.6) + 's');
+    piece.style.setProperty('--duration', (2 + Math.random() * 1.2) + 's');
+    piece.style.setProperty('--rot', (Math.random() * 360) + 'deg');
+    if (!star) piece.style.background = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
+    overlay.appendChild(piece);
+  }
 }
-
-function updateProgress(person) {
-  const boxes = document.querySelectorAll(`.task-toggle[data-person="${person}"]`);
-  if (!boxes.length) return;
-  const done = Array.from(boxes).filter(cb => cb.checked).length;
-  const pct = Math.round((done / boxes.length) * 100);
-  const card = document.querySelector(`.kidcard.${person}`);
-  card.querySelector('.head span:last-child').textContent = pct + '%';
-  card.querySelector('.progressbar > div').style.width = pct + '%';
-}
-
-const celebrated = {};
 
 function celebrate(person) {
   const overlay = document.createElement('div');
   overlay.className = 'celebrate-overlay';
   overlay.innerHTML = `<div class="celebrate-card ${person}"><div class="celebrate-msg"></div></div>`;
   overlay.querySelector('.celebrate-msg').textContent = randomCongrats(person);
-  for (let i = 0; i < 28; i++) {
-    const piece = document.createElement('div');
-    piece.className = 'confetti-piece';
-    piece.style.left = (Math.random() * 100) + 'vw';
-    piece.style.setProperty('--delay', (Math.random() * 0.6) + 's');
-    piece.style.setProperty('--duration', (2 + Math.random() * 1.2) + 's');
-    piece.style.setProperty('--rot', (Math.random() * 360) + 'deg');
-    piece.style.background = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
-    overlay.appendChild(piece);
-  }
+  spawnConfetti(overlay, 28);
   document.body.appendChild(overlay);
   const dismiss = () => { overlay.classList.add('fade-out'); setTimeout(() => overlay.remove(), 300); };
   overlay.addEventListener('click', dismiss);
   setTimeout(dismiss, 2800);
 }
 
+function celebrateMilestone(person, total) {
+  const overlay = document.createElement('div');
+  overlay.className = 'celebrate-overlay milestone-overlay';
+  overlay.innerHTML = `
+    <div class="celebrate-card ${person} milestone">
+      <div class="milestone-badge"><span class="milestone-icon icon-etoile"></span></div>
+      <div class="milestone-ribbon">Série débloquée</div>
+      <div class="celebrate-msg"></div>
+      ${total ? `<div class="milestone-count"><span class="star-char">★</span> ${total}</div>` : ''}
+    </div>`;
+  overlay.querySelector('.celebrate-msg').textContent = MILESTONE_MSG;
+  spawnConfetti(overlay, 45);
+  spawnConfetti(overlay, 18, true);
+  document.body.appendChild(overlay);
+  const dismiss = () => { overlay.classList.add('fade-out'); setTimeout(() => overlay.remove(), 300); };
+  overlay.addEventListener('click', dismiss);
+  setTimeout(dismiss, 5500);
+}
+
+function updateCardProgress(cardEl) {
+  const boxes = cardEl.querySelectorAll('.task-toggle');
+  if (!boxes.length) return 0;
+  const done = Array.from(boxes).filter(cb => cb.checked).length;
+  const pct = Math.round((done / boxes.length) * 100);
+  cardEl.querySelector('.pct-badge').textContent = pct + '%';
+  cardEl.querySelector('.progressbar > div').style.width = pct + '%';
+  return pct;
+}
+
+function sparkBurst(x, y, color) {
+  for (let i = 0; i < 8; i++) {
+    const p = document.createElement('div');
+    p.className = 'spark-particle';
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 26 + Math.random() * 26;
+    p.style.setProperty('--dx', Math.cos(angle) * dist + 'px');
+    p.style.setProperty('--dy', Math.sin(angle) * dist + 'px');
+    p.style.left = x + 'px';
+    p.style.top = y + 'px';
+    p.style.background = color;
+    document.body.appendChild(p);
+    setTimeout(() => p.remove(), 600);
+  }
+}
+
+const celebratedPhase = {};
+
 document.querySelectorAll('.task-toggle').forEach(cb=>{
   cb.addEventListener('change', ()=>{
     const wasChecked = cb.checked;
     const person = cb.dataset.person;
+    const cardEl = cb.closest('.kidcard');
+    const phaseKey = person + '_' + cardEl.dataset.phase;
     cb.closest('.task').classList.toggle('done', wasChecked);
-    updateProgress(person);
+    const pct = updateCardProgress(cardEl);
+    if (!wasChecked) celebratedPhase[phaseKey] = false;
+    if (wasChecked) {
+      const rect = cb.getBoundingClientRect();
+      sparkBurst(rect.left + rect.width / 2, rect.top + rect.height / 2, getComputedStyle(cb).backgroundColor);
+    }
     const fd = new FormData();
     fd.append('person', person);
     fd.append('task_id', cb.dataset.task);
     fd.append('day', DAY);
     fd.append('done', wasChecked ? '1' : '0');
-    if (!wasChecked) celebrated[person] = false;
     fetch("{% url 'toggle_task' %}", {method:'POST', headers:{'X-CSRFToken':CSRF}, body: fd})
       .then(r=>{
         if(!r.ok) throw new Error();
+        return r.json();
+      })
+      .then(data=>{
         if (wasChecked && (person === 'fille' || person === 'fils') &&
-            isCardComplete(person) && !celebrated[person]) {
-          celebrated[person] = true;
+            pct === 100 && !celebratedPhase[phaseKey]) {
+          celebratedPhase[phaseKey] = true;
           celebrate(person);
+        }
+        if (data && data.milestone_reached) {
+          celebrateMilestone(person, data.stars_total);
         }
       })
       .catch(()=>{
         cb.checked = !wasChecked;
         cb.closest('.task').classList.toggle('done', cb.checked);
-        updateProgress(person);
+        updateCardProgress(cardEl);
         alert("Échec de l'enregistrement, réessayez.");
       });
+  });
+});
+
+/* ---- Minuteur par tâche ---- */
+function formatDuration(totalSeconds) {
+  const s = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, '0')}`;
+  if (m > 0) return `${m}min`;
+  return `${sec}s`;
+}
+
+function updateTimerLabel(btn) {
+  const base = parseInt(btn.dataset.seconds || '0', 10);
+  const running = btn.dataset.running === '1';
+  const started = parseInt(btn.dataset.started || '0', 10);
+  const total = running && started ? base + (Date.now() - started) / 1000 : base;
+  btn.querySelector('.timer-label').textContent = total > 0 ? formatDuration(total) : '';
+}
+
+document.querySelectorAll('.timerbtn').forEach(updateTimerLabel);
+setInterval(() => {
+  document.querySelectorAll('.timerbtn[data-running="1"]').forEach(updateTimerLabel);
+}, 1000);
+
+document.querySelectorAll('.timerbtn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const action = btn.dataset.running === '1' ? 'stop' : 'start';
+    const fd = new FormData();
+    fd.append('person', btn.dataset.person);
+    fd.append('task_id', btn.dataset.task);
+    fd.append('day', DAY);
+    fd.append('action', action);
+    fetch("{% url 'timer_task' %}", {method:'POST', headers:{'X-CSRFToken':CSRF}, body: fd})
+      .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(data => {
+        btn.dataset.seconds = data.seconds_spent;
+        btn.dataset.running = data.running ? '1' : '0';
+        btn.dataset.started = data.started_at_ms || '';
+        btn.classList.toggle('running', data.running);
+        updateTimerLabel(btn);
+      })
+      .catch(() => alert("Échec du minuteur, réessayez."));
+  });
+});
+
+/* ---- Réordonner les tâches (flèches haut/bas) ---- */
+function refreshOrderButtons(container) {
+  const rows = Array.from(container.querySelectorAll('[data-task-row]'));
+  rows.forEach((row, i) => {
+    const up = row.querySelector('.orderbtn[data-dir="up"]');
+    const down = row.querySelector('.orderbtn[data-dir="down"]');
+    if (up) up.disabled = i === 0;
+    if (down) down.disabled = i === rows.length - 1;
+  });
+}
+document.querySelectorAll('.phase-block').forEach(refreshOrderButtons);
+
+document.querySelectorAll('.orderbtn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const row = btn.closest('[data-task-row]');
+    const container = row.parentElement;
+    const sibling = btn.dataset.dir === 'up' ? row.previousElementSibling : row.nextElementSibling;
+    if (!sibling) return;
+    if (btn.dataset.dir === 'up') container.insertBefore(row, sibling);
+    else container.insertBefore(sibling, row);
+    refreshOrderButtons(container);
+
+    const fd = new FormData();
+    fd.append('person', row.dataset.person);
+    Array.from(container.querySelectorAll('[data-task-row]')).forEach(r => fd.append('task_ids[]', r.dataset.taskId));
+    fetch("{% url 'reorder_tasks' %}", {method:'POST', headers:{'X-CSRFToken':CSRF}, body: fd})
+      .catch(() => alert("Échec de l'enregistrement de l'ordre, réessayez."));
   });
 });
 </script>

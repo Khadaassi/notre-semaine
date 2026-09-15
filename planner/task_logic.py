@@ -92,6 +92,18 @@ def group_by_phase(tasks):
     return [(p, PHASE_LABELS[p], buckets[p]) for p in ('matin', 'journee', 'soir') if buckets[p]]
 
 
+def apply_order(tasks, order_map):
+    """Resorts a phase's task list per a person's saved custom order (task_id -> rank).
+    Tasks with a saved rank come first, in that rank's order; anything never explicitly
+    ordered (new tasks, tasks only seen on other days) keeps its original relative order,
+    appended after — so a fresh order never has to be set for everything at once."""
+    def sort_key(pair):
+        idx, task = pair
+        rank = order_map.get(task['id'])
+        return (0, rank, idx) if rank is not None else (1, 0, idx)
+    return [task for idx, task in sorted(enumerate(tasks), key=sort_key)]
+
+
 def pillar_for(task_id, period):
     """Classifies a task into one of the 4 organizing pillars (+ 'journee' for context/
     school/work info that doesn't belong to a routine or a chore)."""
