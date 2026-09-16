@@ -1,5 +1,6 @@
 {% extends "planner/base.html" %}
 {% block content %}
+{% if wizard %}{% include "planner/_wizard_banner.html" %}{% endif %}
 <div class="card">
   <h2>Réglages</h2>
   <form method="post">

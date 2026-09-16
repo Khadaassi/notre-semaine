@@ -1,0 +1,25 @@
+{# Progress banner for the "Préparer notre semaine" wizard (Lot 5b) — included by week.html,
+   settings.html, menu.html and maison.html when their view passed a non-empty `wizard` context
+   (see views._wizard_banner). Pure display: every link below points at a real screen with its
+   own ?wizard=1&step=N, nothing here duplicates the underlying page's logic. #}
+<div class="card wizard-banner">
+  <div class="wizard-banner-head">
+    <span class="wizard-step-badge">Étape {{ wizard.step }}/{{ wizard.total }}</span>
+    <h3 class="wizard-banner-title">{{ wizard.label }}</h3>
+  </div>
+  <p class="hint" style="margin-bottom:0;">{{ wizard.description }}</p>
+  <div class="wizard-steps">
+    {% for n in "1234" %}
+      <span class="wizard-dot {% if forloop.counter <= wizard.step %}filled{% endif %} {% if forloop.counter == wizard.step %}current{% endif %}"></span>
+    {% endfor %}
+  </div>
+  <div class="wizard-banner-actions">
+    {% if wizard.is_last %}
+      <a href="{% url 'wizard_start' %}?done=1" class="wizard-cta">Terminer le parcours ✓</a>
+    {% else %}
+      <a href="{{ wizard.next_url }}" class="wizard-cta">Étape suivante →</a>
+      <a href="{{ wizard.next_url }}" class="wizard-skip">Passer cette étape</a>
+    {% endif %}
+    <a href="{% url 'today' %}" class="wizard-exit">Quitter le parcours</a>
+  </div>
+</div>

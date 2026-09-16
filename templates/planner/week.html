@@ -1,6 +1,7 @@
 {% extends "planner/base.html" %}
 {% load planner_extras %}
 {% block content %}
+{% if wizard %}{% include "planner/_wizard_banner.html" %}{% endif %}
 <div class="card">
   <div class="week-nav">
     <a class="week-nav-btn" href="?week={{ prev_week|date:'Y-m-d' }}" aria-label="Semaine précédente">←</a>

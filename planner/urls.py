@@ -30,6 +30,7 @@ urlpatterns = [
     path('taches/exception/ajouter/', views.create_task_exception, name='create_task_exception'),
     path('taches/reassigner/', views.reassign_task, name='reassign_task'),
     path('taches/mode-jour/', views.set_day_mode, name='set_day_mode'),
+    path('preparer/', views.wizard_start, name='wizard_start'),
     path('inscription/', views.signup, name='signup'),
     path('tablette/<str:token>/', views.tablet_view, name='tablet'),
 ]

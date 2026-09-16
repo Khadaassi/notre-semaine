@@ -1,5 +1,6 @@
 {% extends "planner/base.html" %}
 {% block content %}
+{% if wizard %}{% include "planner/_wizard_banner.html" %}{% endif %}
 {% if settings.nb_enfants == 1 %}
 <div class="card">
   <h2>Ménage</h2>

@@ -1,5 +1,6 @@
 {% extends "planner/base.html" %}
 {% block content %}
+{% if wizard %}{% include "planner/_wizard_banner.html" %}{% endif %}
 <div class="card">
   <h2>Menu de la semaine</h2>
   {% for row in day_rows %}

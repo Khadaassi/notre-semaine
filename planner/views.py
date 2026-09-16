@@ -146,6 +146,34 @@ def _family_people(settings):
     return _kids_people(settings) + ['maman', 'papa']
 
 
+def _wizard_banner(request, step, label, description, next_url=None, is_last=False):
+    """Builds the progress-banner context for one screen of the 'Préparer notre semaine'
+    wizard (Lot 5b), active only when the URL carries ?wizard=1 (see wizard_start below).
+    Deliberately stateless: the query string is the only source of truth, so a screen visited
+    without the param just renders normally, with no banner and nothing to clean up — see
+    the module-level note near wizard_start for the full design rationale."""
+    if request.GET.get('wizard') != '1':
+        return None
+    return {
+        'step': step, 'total': 4, 'label': label, 'description': description,
+        'next_url': next_url, 'is_last': is_last,
+    }
+
+
+def _wizard_redirect(request, view_name, step=None):
+    """Same as redirect(view_name), except it re-appends ?wizard=1&step=N when the request
+    that triggered it was itself part of the wizard flow. Plain redirect()/reverse() drop the
+    query string entirely, which would silently kick the user out of the wizard on the very
+    first same-page action of a step (picking a recipe, adding a custom task...) — this is
+    the only thing standing between "wizard=1 disappears" and "banner survives the step"."""
+    url = reverse(view_name)
+    if request.GET.get('wizard') == '1':
+        use_step = step if step is not None else (request.GET.get('step') or '')
+        if use_step:
+            url = f"{url}?wizard=1&step={use_step}"
+    return redirect(url)
+
+
 @login_required
 def today(request):
     family = _get_family(request)
@@ -632,13 +660,19 @@ def week_view(request):
     rotation_note = (f"Table → {_person_label(settings.rotation_table, settings)} · "
                       f"Lave-vaisselle → {_person_label(settings.rotation_lave_vaisselle, settings)}")
 
+    wizard = _wizard_banner(
+        request, 1, 'Événements de la semaine',
+        "Vérifiez les activités et les éventuels chevauchements avant de répartir les tâches.",
+        next_url=f"{reverse('settings')}?wizard=1&step=2",
+    )
+
     return render(request, 'planner/week.html', {
         'day_headers': day_headers, 'table_rows': table_rows, 'rotation_note': rotation_note,
         'week_start': week_start, 'week_end': week_start + datetime.timedelta(days=6),
         'prev_week': week_start - datetime.timedelta(days=7),
         'next_week': week_start + datetime.timedelta(days=7),
         'is_current_week': week_start == today_monday, 'current_week': today_monday,
-        'week_note': settings.week_note,
+        'week_note': settings.week_note, 'wizard': wizard,
     })
 
 
@@ -691,8 +725,14 @@ def maison(request):
     grouped = {}
     for i in items:
         grouped.setdefault(i.category or 'Ajoutés', []).append(i)
+    wizard = _wizard_banner(
+        request, 4, 'Courses',
+        "Cochez les ingrédients au fur et à mesure de vos achats.",
+        is_last=True,
+    )
     return render(request, 'planner/maison.html', {
         'settings': settings, 'grouped': grouped, 'menu_category': MENU_GROCERY_CATEGORY,
+        'wizard': wizard,
     })
 
 
@@ -825,22 +865,22 @@ def menu(request):
                 recipe.family = family
                 recipe.save()
                 messages.success(request, "Recette enregistrée.")
-                return redirect('menu')
+                return _wizard_redirect(request, 'menu')
             recipe_form = form
         elif 'delete_recipe' in request.POST:
             Recipe.objects.filter(id=request.POST['delete_recipe'], family=family).delete()
             messages.success(request, "Recette supprimée.")
-            return redirect('menu')
+            return _wizard_redirect(request, 'menu')
         elif 'set_day' in request.POST:
             day = request.POST['set_day']
             recipe_id = request.POST.get('recipe_id') or None
             if recipe_id and not Recipe.objects.filter(id=recipe_id, family=family).exists():
                 messages.error(request, "Recette invalide.")
-                return redirect('menu')
+                return _wizard_redirect(request, 'menu')
             WeeklyMenuEntry.objects.update_or_create(
                 family=family, week_start=week_start, day=day, defaults={'recipe_id': recipe_id}
             )
-            return redirect('menu')
+            return _wizard_redirect(request, 'menu')
         elif 'copy_to_courses' in request.POST:
             # Explicit conflict handling (Lot 4, point 5): copy_to_courses used to be a
             # silent get_or_create — an item already checked "acheté" that becomes needed
@@ -875,12 +915,32 @@ def menu(request):
                             item.checked = False
                         item.save(update_fields=['quantity', 'unit', 'checked'])
                 messages.success(request, "Ingrédients ajoutés à la liste de courses.")
+                # Step 4 of the "Préparer notre semaine" wizard (see wizard_start): this POST
+                # *is* step 4's action, so on success it hands off straight to 'maison' (the
+                # screen that lists what was just copied) instead of looping back to 'menu' —
+                # outside the wizard, behavior is unchanged (back to 'menu').
+                if request.GET.get('wizard') == '1' and request.GET.get('step') == '4':
+                    return redirect(f"{reverse('maison')}?wizard=1&step=4")
                 return redirect('menu')
+
+    wizard_step = 4 if request.GET.get('step') == '4' else 3
+    if wizard_step == 4:
+        wizard = _wizard_banner(
+            request, 4, 'Courses',
+            "Ajoutez les ingrédients du menu à la liste de courses avec le bouton ci-dessous.",
+            next_url=f"{reverse('maison')}?wizard=1&step=4",
+        )
+    else:
+        wizard = _wizard_banner(
+            request, 3, 'Menus',
+            "Choisissez une recette pour chaque jour de la semaine.",
+            next_url=f"{reverse('menu')}?wizard=1&step=4",
+        )
 
     return render(request, 'planner/menu.html', {
         'by_cat': by_cat, 'day_rows': day_rows, 'recipes': recipes,
         'all_ingredients': all_ingredients, 'recipe_form': recipe_form,
-        'favoris_only': favoris_only, 'pending_conflicts': pending_conflicts,
+        'favoris_only': favoris_only, 'pending_conflicts': pending_conflicts, 'wizard': wizard,
     })
 
 
@@ -954,7 +1014,7 @@ def settings_view(request):
             settings.week_note = request.POST.get('week_note', '')
             settings.save()
             messages.success(request, "Réglages enregistrés.")
-        return redirect('settings')
+        return _wizard_redirect(request, 'settings')
 
     activities = list(Activity.objects.filter(family=family))
     for a in activities:
@@ -968,10 +1028,15 @@ def settings_view(request):
     for exc in task_exceptions:
         exc.person_name = _person_label(exc.person, settings)
         exc.reassigned_to_name = _person_label(exc.reassigned_to, settings) if exc.reassigned_to else ''
+    wizard = _wizard_banner(
+        request, 2, 'Répartition des tâches',
+        "Ajustez les tâches personnalisées, les exceptions et les réattributions de la semaine.",
+        next_url=f"{reverse('menu')}?wizard=1&step=3",
+    )
     return render(request, 'planner/settings.html', {
         'settings': settings, 'activities': activities, 'custom_tasks': custom_tasks,
         'days': DAYS, 'day_full': DAY_FULL, 'members': members, 'tablet_url': tablet_url,
-        'task_exceptions': task_exceptions,
+        'task_exceptions': task_exceptions, 'wizard': wizard,
     })
 
 
@@ -1263,3 +1328,35 @@ def set_day_mode(request):
             family=family, person=person, date=real_date, defaults={'mode': mode},
         )
     return redirect(f"{reverse('today')}?day={day}")
+
+
+@login_required
+def wizard_start(request):
+    """Entry point AND final summary screen for the "Préparer notre semaine" wizard (Lot 5b).
+
+    Design: the wizard is a pure navigation layer over the 4 already-existing screens
+    (week_view → settings_view → menu → maison) — it stores no progress anywhere. The single
+    ?wizard=1&step=N pair carried on each screen's URL *is* the progress state (see
+    _wizard_banner/_wizard_redirect above); this view itself only ever renders one of two
+    static cards (the intro with "Commencer", or the "Terminé !" recap when ?done=1), and its
+    own URL never carries a step. Consequences of that choice, spelled out per the task brief:
+      - Nothing to persist, no migration: refreshing, bookmarking or sharing a step URL just
+        re-derives the same banner from the query string.
+      - Leaving the flow needs no cleanup: navigate anywhere without ?wizard=1 (e.g. via the
+        tab bar) and that screen renders exactly as it does outside the wizard — the banner
+        included on it simply won't render since its own `wizard` context var comes back None.
+      - Step order, decided here: Événements (week_view) → Répartition des tâches
+        (settings_view: tâches personnalisées + exceptions/réattributions already listed
+        there) → Menus (menu) → Courses (menu's copy_to_courses action, which then hands off
+        to maison — see the 'wizard' branch inside menu()).
+
+    Parent-only: step 2 lands on settings_view (parent_required) and step 4 depends on
+    parent-only exception/reassignment tools from step 2, so a non-parent starting the wizard
+    would hit a 403 partway through — refused up front instead, same pattern as the
+    parent-only "Gérer les tâches" toggle on 'Aujourd'hui'."""
+    if not _is_parent(request):
+        raise PermissionDenied
+    return render(request, 'planner/wizard.html', {
+        'done': request.GET.get('done') == '1',
+        'start_url': f"{reverse('week')}?wizard=1&step=1",
+    })

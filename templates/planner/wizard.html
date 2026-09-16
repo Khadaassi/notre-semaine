@@ -1,0 +1,31 @@
+{% extends "planner/base.html" %}
+{% block title %}Préparer notre semaine{% endblock %}
+{% block content %}
+{% if done %}
+<div class="card wizard-card">
+  <h2>Semaine prête !</h2>
+  <p class="hint">Les 4 étapes ont été parcourues. Chaque écran reste modifiable à tout moment
+    depuis la navigation, parcours ou pas.</p>
+  <div class="wizard-recap">
+    <a class="wizard-recap-item" href="{% url 'week' %}"><span class="row-icon icon-organisation"></span>1. Événements de la semaine</a>
+    <a class="wizard-recap-item" href="{% url 'settings' %}"><span class="row-icon icon-exception"></span>2. Répartition des tâches</a>
+    <a class="wizard-recap-item" href="{% url 'menu' %}"><span class="row-icon icon-menu"></span>3. Menus</a>
+    <a class="wizard-recap-item" href="{% url 'maison' %}"><span class="row-icon icon-maison"></span>4. Courses</a>
+  </div>
+  <a href="{% url 'wizard_start' %}" class="wizard-start-btn">Refaire le parcours</a>
+</div>
+{% else %}
+<div class="card wizard-card">
+  <h2>Préparer notre semaine</h2>
+  <p class="hint">Un parcours guidé en 4 étapes pour caler la semaine en une fois : événements,
+    répartition des tâches, menus, puis courses.</p>
+  <ol class="wizard-preview">
+    <li>Événements de la semaine</li>
+    <li>Répartition des tâches</li>
+    <li>Menus</li>
+    <li>Courses</li>
+  </ol>
+  <a href="{{ start_url }}" class="wizard-start-btn">Commencer →</a>
+</div>
+{% endif %}
+{% endblock %}
