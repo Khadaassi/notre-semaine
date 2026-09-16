@@ -10,104 +10,12 @@
 </div>
 
 <div class="kidgrid">
-  {% for card in kid_cards %}
-  <div class="person-col">
-    <h2 class="person-name {{ card.person }}">{{ card.name }}
-      {% if card.level %}<span class="level-badge"><span class="lvl-star icon-etoile"></span>Niv. {{ card.level }}</span>{% endif %}
-    </h2>
-    {% for pc in card.phase_cards %}
-    <div class="kidcard {{ card.person }}" data-person="{{ card.person }}" data-phase="{{ pc.phase_key }}">
-      <div class="head"><span><span class="phase-icon icon-{{ pc.phase_key }}"></span>{{ pc.phase_label }}</span><span class="pct-badge">{{ pc.pct }}%</span></div>
-      <div class="progressbar"><div style="width:{{ pc.pct }}%"></div></div>
-      <div class="phase-block">
-        {% for task in pc.tasks %}
-          {% if task.info %}
-            <div class="task info" data-task-row data-task-id="{{ task.id }}" data-person="{{ card.person }}">
-              <span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label>
-              {% if card.checkable_by_viewer %}
-              <span class="reorder-btns">
-                <button type="button" class="orderbtn" data-dir="up" aria-label="Monter">▲</button>
-                <button type="button" class="orderbtn" data-dir="down" aria-label="Descendre">▼</button>
-              </span>
-              {% endif %}
-            </div>
-          {% else %}
-            <div class="task {% if task.done %}done{% endif %}" data-task-row data-task-id="{{ task.id }}" data-person="{{ card.person }}">
-              <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
-                     {% if task.done %}checked{% endif %} {% if not card.checkable_by_viewer %}disabled{% endif %}
-                     class="task-toggle">
-              <label>{{ task.label }}</label>
-              {% if card.checkable_by_viewer %}
-              <button type="button" class="timerbtn {% if task.timer_running %}running{% endif %}"
-                      data-person="{{ card.person }}" data-task="{{ task.id }}"
-                      data-seconds="{{ task.seconds_spent }}" data-running="{% if task.timer_running %}1{% else %}0{% endif %}"
-                      data-started="{{ task.timer_started_ms|default_if_none:'' }}" aria-label="Minuteur">
-                <span class="row-icon icon-clock"></span><span class="timer-label"></span>
-              </button>
-              <span class="reorder-btns">
-                <button type="button" class="orderbtn" data-dir="up" aria-label="Monter">▲</button>
-                <button type="button" class="orderbtn" data-dir="down" aria-label="Descendre">▼</button>
-              </span>
-              {% endif %}
-            </div>
-          {% endif %}
-        {% endfor %}
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-  {% endfor %}
+  {% include "planner/_person_cards.html" with cards=kid_cards %}
 </div>
 
 {% if parent_cards %}
 <div class="parentgrid">
-  {% for card in parent_cards %}
-  <div class="person-col">
-    <h2 class="person-name {{ card.person }}">{{ card.name }}
-      {% if card.level %}<span class="level-badge"><span class="lvl-star icon-etoile"></span>Niv. {{ card.level }}</span>{% endif %}
-    </h2>
-    {% for pc in card.phase_cards %}
-    <div class="kidcard {{ card.person }}" data-person="{{ card.person }}" data-phase="{{ pc.phase_key }}">
-      <div class="head"><span><span class="phase-icon icon-{{ pc.phase_key }}"></span>{{ pc.phase_label }}</span><span class="pct-badge">{{ pc.pct }}%</span></div>
-      <div class="progressbar"><div style="width:{{ pc.pct }}%"></div></div>
-      <div class="phase-block">
-        {% for task in pc.tasks %}
-          {% if task.info %}
-            <div class="task info" data-task-row data-task-id="{{ task.id }}" data-person="{{ card.person }}">
-              <span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label>
-              {% if card.checkable_by_viewer %}
-              <span class="reorder-btns">
-                <button type="button" class="orderbtn" data-dir="up" aria-label="Monter">▲</button>
-                <button type="button" class="orderbtn" data-dir="down" aria-label="Descendre">▼</button>
-              </span>
-              {% endif %}
-            </div>
-          {% else %}
-            <div class="task {% if task.done %}done{% endif %}" data-task-row data-task-id="{{ task.id }}" data-person="{{ card.person }}">
-              <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
-                     {% if task.done %}checked{% endif %} {% if not card.checkable_by_viewer %}disabled{% endif %}
-                     class="task-toggle">
-              <label>{{ task.label }}</label>
-              {% if card.checkable_by_viewer %}
-              <button type="button" class="timerbtn {% if task.timer_running %}running{% endif %}"
-                      data-person="{{ card.person }}" data-task="{{ task.id }}"
-                      data-seconds="{{ task.seconds_spent }}" data-running="{% if task.timer_running %}1{% else %}0{% endif %}"
-                      data-started="{{ task.timer_started_ms|default_if_none:'' }}" aria-label="Minuteur">
-                <span class="row-icon icon-clock"></span><span class="timer-label"></span>
-              </button>
-              <span class="reorder-btns">
-                <button type="button" class="orderbtn" data-dir="up" aria-label="Monter">▲</button>
-                <button type="button" class="orderbtn" data-dir="down" aria-label="Descendre">▼</button>
-              </span>
-              {% endif %}
-            </div>
-          {% endif %}
-        {% endfor %}
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-  {% endfor %}
+  {% include "planner/_person_cards.html" with cards=parent_cards %}
 </div>
 {% endif %}
 
