@@ -131,6 +131,21 @@
 </div>
 
 <div class="card">
+  <h2>Exceptions de tâches</h2>
+  <div class="hint">Créées depuis « Aujourd'hui » (bouton « Gérer les tâches ») : désactivations, journées non applicables et réattributions ponctuelles. « Réactiver » annule l'exception et remet la tâche telle quelle.</div>
+  {% for exc in task_exceptions %}
+    <div class="pill">
+      {{ exc.person_name }} — {{ exc.task_id }} — {{ exc.get_kind_display }}{% if exc.kind == 'reassigned' %} → {{ exc.reassigned_to_name }}{% endif %} ({{ exc.date|date:"d/m/Y" }})
+      <form method="post" action="{% url 'reactivate_task_exception' exc.id %}" style="display:inline;">{% csrf_token %}
+        <button type="submit" class="delbtn">Réactiver</button>
+      </form>
+    </div>
+  {% empty %}
+    <div class="hint" style="margin:0;">Aucune exception active.</div>
+  {% endfor %}
+</div>
+
+<div class="card">
   <h2>Membres de la famille</h2>
   <div class="hint">Ces comptes ont accès à toutes les données ci-dessus.</div>
   {% for m in members %}

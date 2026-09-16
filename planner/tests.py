@@ -9,7 +9,7 @@ from django.urls import reverse
 
 from .models import (
     Family, FamilySettings, FamilyMembership, PARENT_ROLES, StarAward, KidStars,
-    TaskCompletion, TaskException, CustomTask,
+    TaskCompletion, TaskException, CustomTask, DayMode,
 )
 from .task_logic import is_zone_b_holiday, ZONE_B_HOLIDAYS, tasks_for
 from .views import _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day
@@ -273,6 +273,179 @@ class CustomTaskSettingsViewTests(TestCase):
         self.assertEqual(task.label, 'New')
         self.assertEqual(sorted(task.days), ['jeudi', 'mardi'])
         self.assertEqual(task.person, 'fils')
+
+
+class DayModeStarNonPenalizationTests(TestCase):
+    """A person marked 'absence' or 'allegee' for a day ends up with fewer checkable tasks
+    (see DayModeTaskFilteringTests), but that must never block their star: completing
+    exactly the (smaller) checkable set still awards one — same mechanism as
+    StarAwardTests.test_not_applicable_task_does_not_block_star, since
+    views._checkable_ids_for recomputes the expected set dynamically either way."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='DMStar', invite_code='DAYMODESTAR1')
+        FamilySettings.load(self.family)
+        self.day = 'lundi'
+        self.person = 'fille'
+        self.real_date = _real_date_for_day(self.day)
+
+    def _complete(self, task_ids):
+        for task_id in task_ids:
+            TaskCompletion.objects.update_or_create(
+                family=self.family, person=self.person, date=self.real_date, task_id=task_id,
+                defaults={'done': True},
+            )
+
+    def test_absence_day_awards_star_for_reduced_checklist(self):
+        normal_ids = _checkable_ids_for(self.person, self.day, self.family)
+        DayMode.objects.create(family=self.family, person=self.person, date=self.real_date, mode='absence')
+        absence_ids = _checkable_ids_for(self.person, self.day, self.family)
+        self.assertTrue(absence_ids)
+        self.assertLess(len(absence_ids), len(normal_ids))
+
+        self._complete(absence_ids)
+        _award_star_if_day_complete(self.family, self.person, self.day, self.real_date)
+
+        self.assertTrue(
+            StarAward.objects.filter(family=self.family, person=self.person, date=self.real_date).exists()
+        )
+        self.assertEqual(KidStars.objects.get(family=self.family, person=self.person).total, 1)
+
+    def test_allegee_day_awards_star_for_reduced_checklist(self):
+        normal_ids = _checkable_ids_for(self.person, self.day, self.family)
+        DayMode.objects.create(family=self.family, person=self.person, date=self.real_date, mode='allegee')
+        allegee_ids = _checkable_ids_for(self.person, self.day, self.family)
+        self.assertTrue(allegee_ids)
+        self.assertLess(len(allegee_ids), len(normal_ids))
+
+        self._complete(allegee_ids)
+        _award_star_if_day_complete(self.family, self.person, self.day, self.real_date)
+
+        self.assertTrue(
+            StarAward.objects.filter(family=self.family, person=self.person, date=self.real_date).exists()
+        )
+
+
+class TaskExceptionUITests(TestCase):
+    """Point 1: creating disabled_once/disabled_from/not_applicable TaskException rows from
+    'Aujourd'hui', listing/reactivating them from settings, and restricting the whole thing
+    to parents."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='TEX', invite_code='TEXFAM1')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('texparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='papa')
+        self.client.force_login(self.parent)
+        self.day = 'lundi'
+        self.real_date = _real_date_for_day(self.day)
+
+    def test_create_disabled_once_removes_task_for_that_day_only(self):
+        checkable = _checkable_ids_for('fille', self.day, self.family)
+        task_id = sorted(checkable)[0]
+        resp = self.client.post(reverse('create_task_exception'), {
+            'person': 'fille', 'task_id': task_id, 'day': self.day, 'kind': 'disabled_once',
+        })
+        self.assertEqual(resp.status_code, 302)
+        remaining = _checkable_ids_for('fille', self.day, self.family)
+        self.assertNotIn(task_id, remaining)
+
+    def test_reactivate_removes_the_exception_and_restores_the_task(self):
+        exc = TaskException.objects.create(
+            family=self.family, person='fille', task_id='lit', kind='disabled_once', date=self.real_date,
+        )
+        self.assertNotIn('lit', _checkable_ids_for('fille', self.day, self.family))
+        resp = self.client.post(reverse('reactivate_task_exception', args=[exc.id]))
+        self.assertEqual(resp.status_code, 302)
+        exc.refresh_from_db()
+        self.assertFalse(exc.active)
+        self.assertIn('lit', _checkable_ids_for('fille', self.day, self.family))
+
+    def test_child_cannot_create_task_exception(self):
+        child = User.objects.create_user('texchild', password='pass12345')
+        FamilyMembership.objects.create(user=child, family=self.family, role='enfants')
+        self.client.force_login(child)
+        resp = self.client.post(reverse('create_task_exception'), {
+            'person': 'fille', 'task_id': 'lit', 'day': self.day, 'kind': 'disabled_once',
+        })
+        self.assertEqual(resp.status_code, 403)
+
+
+class SetDayModeTests(TestCase):
+    """Point 4's UI plumbing: setting/clearing a person's DayMode for one day from
+    'Aujourd'hui', restricted to parents."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='SDM', invite_code='SETDAYMODE1')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('sdmparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='papa')
+        self.client.force_login(self.parent)
+        self.day = 'lundi'
+        self.real_date = _real_date_for_day(self.day)
+
+    def test_set_day_mode_creates_a_daymode_row(self):
+        resp = self.client.post(reverse('set_day_mode'), {
+            'person': 'fille', 'day': self.day, 'mode': 'absence',
+        })
+        self.assertEqual(resp.status_code, 302)
+        dm = DayMode.objects.get(family=self.family, person='fille', date=self.real_date)
+        self.assertEqual(dm.mode, 'absence')
+
+    def test_setting_mode_back_to_normal_deletes_the_row(self):
+        DayMode.objects.create(family=self.family, person='fille', date=self.real_date, mode='absence')
+        resp = self.client.post(reverse('set_day_mode'), {
+            'person': 'fille', 'day': self.day, 'mode': 'normal',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(
+            DayMode.objects.filter(family=self.family, person='fille', date=self.real_date).exists()
+        )
+
+    def test_child_cannot_set_day_mode(self):
+        child = User.objects.create_user('sdmchild', password='pass12345')
+        FamilyMembership.objects.create(user=child, family=self.family, role='enfants')
+        self.client.force_login(child)
+        resp = self.client.post(reverse('set_day_mode'), {
+            'person': 'fille', 'day': self.day, 'mode': 'absence',
+        })
+        self.assertEqual(resp.status_code, 403)
+
+
+class TodayAndSettingsPagesRenderWithNewUITests(TestCase):
+    """Smoke-tests the new per-task/per-card controls actually render: a parent sees the
+    'Gérer les tâches' toggle and the day-mode picker, a child sees neither (routines-v2
+    management stays parent-only), and settings lists the new exceptions card."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='TP', invite_code='TODAYPAGE1')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('tpparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.child = User.objects.create_user('tpchild', password='pass12345')
+        FamilyMembership.objects.create(user=self.child, family=self.family, role='enfants')
+
+    def test_today_page_renders_for_parent_with_exception_controls(self):
+        self.client.force_login(self.parent)
+        resp = self.client.get(reverse('today'))
+        self.assertEqual(resp.status_code, 200)
+        # The toggle button's id is only rendered inside {% if is_parent %} — text alone
+        # isn't a safe marker here since the page's own JS mentions the same label.
+        self.assertContains(resp, 'id="exceptionToggle"')
+        self.assertContains(resp, 'Mode du jour')
+
+    def test_today_page_renders_for_child_without_exception_controls(self):
+        self.client.force_login(self.child)
+        resp = self.client.get(reverse('today'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'id="exceptionToggle"')
+        self.assertNotContains(resp, 'Mode du jour')
+
+    def test_settings_page_lists_task_exceptions_card(self):
+        self.client.force_login(self.parent)
+        resp = self.client.get(reverse('settings'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Exceptions de tâches')
 
 
 class CustomTaskDaysDataMigrationTests(TransactionTestCase):

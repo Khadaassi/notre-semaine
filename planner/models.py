@@ -226,7 +226,8 @@ class TaskException(models.Model):
     """An override on a generated (task_logic) or custom task, keyed by its task_id — lets
     a parent skip a task for one day, suspend it indefinitely, or mark a day where it
     doesn't apply without that counting against completion/star eligibility. See
-    task_logic.split_by_exceptions for how this is applied; no management UI yet (routines-v2)."""
+    task_logic.split_by_exceptions for how this is applied — management UI in views.py
+    (create_task_exception / reactivate_task_exception)."""
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     person = models.CharField(max_length=10, choices=PERSON_CHOICES)
     task_id = models.CharField(max_length=60)
