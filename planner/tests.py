@@ -1134,6 +1134,23 @@ class DayModeTaskFilteringTests(TestCase):
         explicit_normal_ids = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, [], day_mode='normal')}
         self.assertEqual(normal_ids, explicit_normal_ids)
 
+    def test_coran_is_never_dropped_by_any_day_mode(self):
+        for mode in ('normal', 'vacances', 'absence', 'allegee'):
+            with self.subTest(day_mode=mode):
+                ids = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, [], day_mode=mode)}
+                self.assertIn('coran', ids)
+
+    def test_allegee_shortens_coran_instead_of_dropping_it(self):
+        normal_coran = next(t for t in tasks_for('fille', 'lundi', self.settings, []) if t['id'] == 'coran')
+        allegee_coran = next(
+            t for t in tasks_for('fille', 'lundi', self.settings, [], day_mode='allegee') if t['id'] == 'coran'
+        )
+        absence_coran = next(
+            t for t in tasks_for('fille', 'lundi', self.settings, [], day_mode='absence') if t['id'] == 'coran'
+        )
+        self.assertNotEqual(allegee_coran['label'], normal_coran['label'])
+        self.assertEqual(absence_coran['label'], normal_coran['label'])
+
 
 class CustomTaskMultiDayTests(TestCase):
     """CustomTask.days replaces the old single-value `day` (routines-v2 point 3): a task

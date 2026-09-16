@@ -159,15 +159,20 @@ def active_day_mode(family, person, date):
 # 'absence' (the person is away for the day): drop anything tied to being physically
 # present somewhere — school, driving to/attending an activity, work — but keep the core
 # spiritual/hygiene/meal routine (prayer, wudu, brushing teeth, showering, meals...), since
-# that's reasonably still relevant wherever they are.
+# that's reasonably still relevant wherever they are. Coran is deliberately NOT in this set —
+# it's non-negotiable every day, with no exception for being away (see _apply_day_mode).
 DAY_MODE_ABSENCE_DROP_IDS = {
     'ecole', 'devoirs', 'sac_demain', 'sac_semaine', 'activite_famille', 'arabe',
     'vacances', 'ecran', 'pasecole', 'mahlo', 'travail', 'pickup', 'pickup_midi',
-    'accompagnement', 'journee', 'coran',
+    'accompagnement', 'journee',
 }
-# 'allegee' (lightened day): drop heavy chores and full homework, keep the rest of the
-# routine as-is.
+# 'allegee' (lightened day — also the "sick day" mode; see DAY_MODE_CHOICES): drop heavy
+# chores and full homework, keep the rest of the routine as-is.
 DAY_MODE_ALLEGEE_DROP_IDS = {'devoirs', 'deepclean', 'lessive', 'frigo', 'draps', 'reset'}
+
+# Coran is never dropped by any DayMode — it's only ever shortened, and only on an 'allegee'
+# (sick) day. 'lit'/'coran' both use this pattern elsewhere for the lighter weekend phrasing.
+CORAN_LIGHT_LABEL = 'Coran — révision légère'
 
 
 def _apply_day_mode(tasks, day_mode):
@@ -175,7 +180,8 @@ def _apply_day_mode(tasks, day_mode):
     and 'vacances' (already folded into holiday_today by tasks_for) leave the list
     untouched. Own scheduled activities and driving-to-activity tasks (dynamic ids like
     'activite0', 'drive_fille1') are always dropped on an 'absence' day, since they assume
-    the person is present that day."""
+    the person is present that day. Coran is never in either drop set (see
+    DAY_MODE_ABSENCE_DROP_IDS) — on an 'allegee' day it's shortened instead of dropped."""
     if day_mode not in ('absence', 'allegee'):
         return tasks
     drop_ids = DAY_MODE_ABSENCE_DROP_IDS if day_mode == 'absence' else DAY_MODE_ALLEGEE_DROP_IDS
@@ -187,7 +193,12 @@ def _apply_day_mode(tasks, day_mode):
             return False
         return True
 
-    return [task for task in tasks if keep(task)]
+    tasks = [task for task in tasks if keep(task)]
+    if day_mode == 'allegee':
+        for task in tasks:
+            if task['id'] == 'coran':
+                task['label'] = CORAN_LIGHT_LABEL
+    return tasks
 
 
 def split_by_exceptions(tasks, disabled_ids, not_applicable_ids):

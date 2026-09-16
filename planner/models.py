@@ -392,7 +392,7 @@ DAY_MODE_CHOICES = [
     ('normal', 'École normale'),
     ('vacances', 'Vacances'),
     ('absence', 'Absence'),
-    ('allegee', 'Journée allégée'),
+    ('allegee', 'Malade / Journée allégée'),
 ]
 
 
