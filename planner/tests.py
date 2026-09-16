@@ -1,15 +1,21 @@
 import datetime
+import importlib
+from decimal import Decimal
 
+from django.apps import apps
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 
+from .forms import RecipeForm, parse_ingredients_text
 from .models import (
     Family, FamilySettings, FamilyMembership, PARENT_ROLES, StarAward, KidStars,
-    TaskCompletion, TaskException,
+    TaskCompletion, TaskException, Recipe, GroceryItem, WeeklyMenuEntry,
 )
 from .task_logic import is_zone_b_holiday, ZONE_B_HOLIDAYS
-from .views import _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day
+from .views import _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _monday_of
+
+_ingredient_migration = importlib.import_module('planner.migrations.0016_migrate_ingredient_format')
 
 
 class ParentRequiredViewsTests(TestCase):
@@ -163,3 +169,314 @@ class SignupRoleTests(TestCase):
         self.assertEqual(resp.status_code, 302)
         membership = FamilyMembership.objects.get(user__username='seconduser')
         self.assertEqual(membership.role, 'enfants')
+
+
+class IngredientFormatToleranceTests(TestCase):
+    """Recipe.normalize_ingredients()/ingredients_list() must read both the pre-Lot-4
+    format (plain list of name strings) and the current {"name","quantity","unit"} dict
+    format, since real recipes migrated by 0016 and any row that somehow slips through
+    unmigrated must both render correctly."""
+
+    def test_normalize_ingredients_accepts_old_string_list(self):
+        self.assertEqual(
+            Recipe.normalize_ingredients(['Poulet', 'Riz']),
+            [{'name': 'Poulet', 'quantity': None, 'unit': ''},
+             {'name': 'Riz', 'quantity': None, 'unit': ''}],
+        )
+
+    def test_normalize_ingredients_accepts_new_dict_list(self):
+        self.assertEqual(
+            Recipe.normalize_ingredients([{'name': 'Poulet', 'quantity': 500, 'unit': 'g'}]),
+            [{'name': 'Poulet', 'quantity': 500, 'unit': 'g'}],
+        )
+
+    def test_normalize_ingredients_drops_blank_entries(self):
+        self.assertEqual(Recipe.normalize_ingredients(['', '  ', {'name': ''}, None]), [])
+
+    def test_ingredients_display_formats_quantity_and_unit(self):
+        recipe = Recipe(ingredients=[
+            {'name': 'Poulet', 'quantity': 500, 'unit': 'g'},
+            {'name': 'Citron', 'quantity': None, 'unit': ''},
+        ])
+        self.assertEqual(recipe.ingredients_display(), ['Poulet — 500 g', 'Citron'])
+
+
+class IngredientDataMigrationTests(TestCase):
+    """Exercises the real 0016 migration functions against live data — both an empty-ish
+    case (idempotent no-op on already-migrated rows) and a family with existing
+    old-format recipes (the real-world case: prod already has recipes stored as plain
+    string lists)."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Migration', invite_code='MIGCODE01')
+
+    def test_forward_migration_converts_old_string_format(self):
+        recipe = Recipe.objects.create(
+            family=self.family, name='Ancienne recette', category='Autre',
+            ingredients=['Poulet', 'Riz', ''],
+        )
+        _ingredient_migration.convert_ingredients_forward(apps, None)
+        recipe.refresh_from_db()
+        self.assertEqual(recipe.ingredients, [
+            {'name': 'Poulet', 'quantity': None, 'unit': ''},
+            {'name': 'Riz', 'quantity': None, 'unit': ''},
+        ])
+
+    def test_forward_migration_is_idempotent_on_already_migrated_rows(self):
+        recipe = Recipe.objects.create(
+            family=self.family, name='Nouvelle recette', category='Autre',
+            ingredients=[{'name': 'Saumon', 'quantity': 200, 'unit': 'g'}],
+        )
+        _ingredient_migration.convert_ingredients_forward(apps, None)
+        recipe.refresh_from_db()
+        self.assertEqual(recipe.ingredients, [{'name': 'Saumon', 'quantity': 200, 'unit': 'g'}])
+
+    def test_forward_migration_on_empty_database_is_a_no_op(self):
+        # No Recipe rows at all — must not raise.
+        Recipe.objects.all().delete()
+        _ingredient_migration.convert_ingredients_forward(apps, None)
+        self.assertEqual(Recipe.objects.count(), 0)
+
+    def test_backward_migration_collapses_dicts_to_name_list(self):
+        recipe = Recipe.objects.create(
+            family=self.family, name='Recette', category='Autre',
+            ingredients=[{'name': 'Poulet', 'quantity': 500, 'unit': 'g'}],
+        )
+        _ingredient_migration.convert_ingredients_backward(apps, None)
+        recipe.refresh_from_db()
+        self.assertEqual(recipe.ingredients, ['Poulet'])
+
+
+class ParseIngredientsTextTests(TestCase):
+    """Covers the classic regex parser behind the recipe form's ingredients field —
+    no AI/LLM involved, per the task constraints."""
+
+    def test_parses_quantity_and_unit(self):
+        self.assertEqual(
+            parse_ingredients_text('Poulet 500g, Riz 200 g, Citron'),
+            [
+                {'name': 'Poulet', 'quantity': 500.0, 'unit': 'g'},
+                {'name': 'Riz', 'quantity': 200.0, 'unit': 'g'},
+                {'name': 'Citron', 'quantity': None, 'unit': ''},
+            ],
+        )
+
+    def test_parses_decimal_dot_and_word_unit(self):
+        # Decimals must use '.', not ',' — ',' is already the ingredient separator, so
+        # a French-style decimal comma would be split into two segments beforehand.
+        self.assertEqual(
+            parse_ingredients_text("Huile d'olive 1.5 cuillère"),
+            [{'name': "Huile d'olive", 'quantity': 1.5, 'unit': 'cuillère'}],
+        )
+
+    def test_blank_and_whitespace_segments_are_ignored(self):
+        self.assertEqual(parse_ingredients_text('Poulet 500g,, , Riz'),
+                          [{'name': 'Poulet', 'quantity': 500.0, 'unit': 'g'},
+                           {'name': 'Riz', 'quantity': None, 'unit': ''}])
+
+
+class RecipeFormTests(TestCase):
+    def test_save_parses_ingredients_and_steps(self):
+        form = RecipeForm(data={
+            'name': 'Nouvelle recette', 'category': 'Autre',
+            'ingredients_text': 'Poulet 500g, Riz 200g, Citron',
+            'steps_text': "Étape un\nÉtape deux",
+            'duration_minutes': '25',
+        })
+        self.assertTrue(form.is_valid(), form.errors)
+        recipe = form.save(commit=False)
+        self.assertEqual(recipe.ingredients, [
+            {'name': 'Poulet', 'quantity': 500.0, 'unit': 'g'},
+            {'name': 'Riz', 'quantity': 200.0, 'unit': 'g'},
+            {'name': 'Citron', 'quantity': None, 'unit': ''},
+        ])
+        self.assertEqual(recipe.steps, ['Étape un', 'Étape deux'])
+        self.assertEqual(recipe.duration_minutes, 25)
+
+
+class AggregateIngredientsTests(TestCase):
+    """Covers Recipe.aggregate_ingredients: the quantity-summing behind
+    menu.copy_to_courses (Lot 4, point 1)."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Agg', invite_code='AGGCODE01')
+
+    def test_sums_same_name_and_unit_across_recipes_case_insensitively(self):
+        r1 = Recipe.objects.create(family=self.family, name='R1', category='Autre',
+                                    ingredients=[{'name': 'Riz', 'quantity': 200, 'unit': 'g'}])
+        r2 = Recipe.objects.create(family=self.family, name='R2', category='Autre',
+                                    ingredients=[{'name': 'riz', 'quantity': 100, 'unit': 'g'}])
+        result = Recipe.aggregate_ingredients([r1, r2])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['name'], 'Riz')
+        self.assertEqual(result[0]['quantity'], Decimal('300'))
+
+    def test_old_format_recipe_contributes_unknown_quantity(self):
+        r1 = Recipe.objects.create(family=self.family, name='R1', category='Autre',
+                                    ingredients=[{'name': 'Citron', 'quantity': 2, 'unit': ''}])
+        r2 = Recipe.objects.create(family=self.family, name='R2', category='Autre',
+                                    ingredients=['Citron'])  # old string-list format
+        result = Recipe.aggregate_ingredients([r1, r2])
+        self.assertEqual(len(result), 1)
+        self.assertIsNone(result[0]['quantity'])
+
+    def test_different_units_are_kept_separate(self):
+        r1 = Recipe.objects.create(family=self.family, name='R1', category='Autre',
+                                    ingredients=[{'name': 'Lait', 'quantity': 200, 'unit': 'ml'}])
+        r2 = Recipe.objects.create(family=self.family, name='R2', category='Autre',
+                                    ingredients=[{'name': 'Lait', 'quantity': 1, 'unit': 'L'}])
+        result = Recipe.aggregate_ingredients([r1, r2])
+        self.assertEqual(len(result), 2)
+
+
+class CopyToCoursesTests(TestCase):
+    """Covers menu.copy_to_courses: quantity aggregation into GroceryItem, and the
+    explicit (non-silent) handling of an ingredient that comes back while its
+    GroceryItem is still checked from a previous week (Lot 4, point 5)."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Courses', invite_code='COURSECODE1')
+        FamilySettings.load(self.family)
+        self.user = User.objects.create_user('parentcourses', password='pass12345')
+        FamilyMembership.objects.create(user=self.user, family=self.family, role='maman')
+        self.client.force_login(self.user)
+        self.recipe1 = Recipe.objects.create(
+            family=self.family, name='Recette A', category='Autre',
+            ingredients=[{'name': 'Riz', 'quantity': 200, 'unit': 'g'},
+                         {'name': 'Poulet', 'quantity': 300, 'unit': 'g'}],
+        )
+        self.recipe2 = Recipe.objects.create(
+            family=self.family, name='Recette B', category='Autre',
+            ingredients=[{'name': 'Riz', 'quantity': 100, 'unit': 'g'}],
+        )
+        week_start = _monday_of(datetime.date.today())
+        WeeklyMenuEntry.objects.create(family=self.family, week_start=week_start, day='lundi', recipe=self.recipe1)
+        WeeklyMenuEntry.objects.create(family=self.family, week_start=week_start, day='mardi', recipe=self.recipe2)
+
+    def test_copy_to_courses_sums_quantities_for_shared_ingredient(self):
+        resp = self.client.post(reverse('menu'), {'copy_to_courses': '1'})
+        self.assertEqual(resp.status_code, 302)
+        rice = GroceryItem.objects.get(family=self.family, name='Riz')
+        self.assertEqual(rice.quantity, Decimal('300.00'))
+        self.assertEqual(rice.unit, 'g')
+        self.assertEqual(rice.category, 'Menu de la semaine')
+        chicken = GroceryItem.objects.get(family=self.family, name='Poulet')
+        self.assertEqual(chicken.quantity, Decimal('300.00'))
+
+    def test_returning_checked_item_requires_explicit_confirmation(self):
+        GroceryItem.objects.create(
+            family=self.family, name='Riz', category='Menu de la semaine', checked=True,
+        )
+        resp = self.client.post(reverse('menu'), {'copy_to_courses': '1'})
+        # No redirect: the confirmation screen is rendered instead of silently acting.
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Riz')
+        rice = GroceryItem.objects.get(family=self.family, name='Riz')
+        self.assertTrue(rice.checked)  # untouched until the user resolves the conflict
+
+    def test_confirmation_uncheck_resolution_marks_item_to_buy_again(self):
+        GroceryItem.objects.create(
+            family=self.family, name='Riz', category='Menu de la semaine', checked=True,
+        )
+        resp = self.client.post(
+            reverse('menu'), {'copy_to_courses': '1', 'resolve_returning': 'uncheck'}
+        )
+        self.assertEqual(resp.status_code, 302)
+        rice = GroceryItem.objects.get(family=self.family, name='Riz')
+        self.assertFalse(rice.checked)
+        self.assertEqual(rice.quantity, Decimal('300.00'))
+
+    def test_confirmation_keep_resolution_leaves_item_checked(self):
+        GroceryItem.objects.create(
+            family=self.family, name='Riz', category='Menu de la semaine', checked=True,
+        )
+        resp = self.client.post(
+            reverse('menu'), {'copy_to_courses': '1', 'resolve_returning': 'keep'}
+        )
+        self.assertEqual(resp.status_code, 302)
+        rice = GroceryItem.objects.get(family=self.family, name='Riz')
+        self.assertTrue(rice.checked)
+
+    def test_unchecked_existing_item_is_updated_without_confirmation(self):
+        GroceryItem.objects.create(
+            family=self.family, name='Riz', category='Ajoutés', checked=False,
+        )
+        resp = self.client.post(reverse('menu'), {'copy_to_courses': '1'})
+        self.assertEqual(resp.status_code, 302)
+        rice = GroceryItem.objects.get(family=self.family, name='Riz')
+        self.assertEqual(rice.quantity, Decimal('300.00'))
+        self.assertEqual(rice.category, 'Ajoutés')  # category untouched on an existing item
+
+
+class GroceryItemManagementTests(TestCase):
+    """Covers edit_grocery/delete_grocery/toggle_grocery_home (Lot 4, points 2 & 4)."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Grocery', invite_code='GROCCODE01')
+        FamilySettings.load(self.family)
+        self.user = User.objects.create_user('parentgrocery', password='pass12345')
+        FamilyMembership.objects.create(user=self.user, family=self.family, role='maman')
+        self.client.force_login(self.user)
+        self.item = GroceryItem.objects.create(family=self.family, name='Yaourts', category='Ajoutés')
+
+    def test_toggle_already_home(self):
+        resp = self.client.post(
+            reverse('toggle_grocery_home'), {'item_id': self.item.id, 'already_home': '1'}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.item.refresh_from_db()
+        self.assertTrue(self.item.already_home)
+
+    def test_edit_grocery_updates_fields(self):
+        resp = self.client.post(reverse('edit_grocery'), {
+            'item_id': self.item.id, 'name': 'Yaourts nature', 'category': 'Produits laitiers',
+            'quantity': '4', 'unit': 'pots',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.name, 'Yaourts nature')
+        self.assertEqual(self.item.category, 'Produits laitiers')
+        self.assertEqual(self.item.quantity, Decimal('4'))
+        self.assertEqual(self.item.unit, 'pots')
+
+    def test_edit_grocery_rejects_blank_name(self):
+        resp = self.client.post(reverse('edit_grocery'), {'item_id': self.item.id, 'name': '  '})
+        self.assertEqual(resp.status_code, 302)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.name, 'Yaourts')  # unchanged
+
+    def test_delete_grocery_removes_item(self):
+        resp = self.client.post(reverse('delete_grocery'), {'item_id': self.item.id})
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(GroceryItem.objects.filter(id=self.item.id).exists())
+
+
+class RecipeFavoriteTests(TestCase):
+    def setUp(self):
+        self.family = Family.objects.create(name='Favorite', invite_code='FAVCODE01')
+        FamilySettings.load(self.family)
+        self.user = User.objects.create_user('parentfav', password='pass12345')
+        FamilyMembership.objects.create(user=self.user, family=self.family, role='maman')
+        self.client.force_login(self.user)
+        self.recipe = Recipe.objects.create(family=self.family, name='Recette C', category='Autre', ingredients=[])
+
+    def test_toggle_favorite(self):
+        resp = self.client.post(
+            reverse('toggle_recipe_favorite'), {'recipe_id': self.recipe.id, 'is_favorite': '1'}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.recipe.refresh_from_db()
+        self.assertTrue(self.recipe.is_favorite)
+
+    def test_menu_favoris_filter_only_shows_favorites(self):
+        # Note: the per-day recipe dropdown always lists every recipe regardless of this
+        # filter (you should be able to assign any recipe to a day even while filtering
+        # the "Recettes enregistrées" list) — so this checks the filtered listing
+        # (by_cat) specifically, not the whole rendered page.
+        Recipe.objects.create(family=self.family, name='Recette D', category='Autre', ingredients=[])
+        self.recipe.is_favorite = True
+        self.recipe.save()
+        resp = self.client.get(reverse('menu'), {'favoris': '1'})
+        display_names = [r.name for items in resp.context['by_cat'].values() for r in items]
+        self.assertIn('Recette C', display_names)
+        self.assertNotIn('Recette D', display_names)
