@@ -483,3 +483,55 @@ class CustomTaskDaysDataMigrationTests(TransactionTestCase):
             executor = MigrationExecutor(connection)
             executor.migrate(executor.loader.graph.leaf_nodes())
             django_apps.clear_cache()
+
+
+class ReassignTaskTests(TestCase):
+    """Point 5: handing a task off to another family member for one day, via
+    TaskException(kind='reassigned') — see views._reassignment_maps/_apply_task_overrides."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='RE', invite_code='REASSIGNFAM1')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('reparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.day = 'lundi'
+        self.real_date = _real_date_for_day(self.day)
+
+    def test_reassigned_task_moves_from_source_to_target(self):
+        source_ids = _checkable_ids_for('maman', self.day, self.family)
+        task_id = sorted(source_ids)[0]
+        resp = self.client.post(reverse('reassign_task'), {
+            'person': 'maman', 'task_id': task_id, 'day': self.day, 'reassigned_to': 'papa',
+        })
+        self.assertEqual(resp.status_code, 302)
+
+        remaining_source = _checkable_ids_for('maman', self.day, self.family)
+        self.assertNotIn(task_id, remaining_source)
+
+        target_ids = _checkable_ids_for('papa', self.day, self.family)
+        self.assertIn(f'reassigned_maman_{task_id}', target_ids)
+
+    def test_reassigned_task_can_be_completed_by_the_target_and_counts_for_their_star(self):
+        source_ids = _checkable_ids_for('fille', self.day, self.family)
+        task_id = sorted(source_ids)[0]
+        self.client.post(reverse('reassign_task'), {
+            'person': 'fille', 'task_id': task_id, 'day': self.day, 'reassigned_to': 'fils',
+        })
+        target_ids = _checkable_ids_for('fils', self.day, self.family)
+        for tid in target_ids:
+            TaskCompletion.objects.update_or_create(
+                family=self.family, person='fils', date=self.real_date, task_id=tid,
+                defaults={'done': True},
+            )
+        _award_star_if_day_complete(self.family, 'fils', self.day, self.real_date)
+        self.assertTrue(
+            StarAward.objects.filter(family=self.family, person='fils', date=self.real_date).exists()
+        )
+
+    def test_cannot_reassign_to_self(self):
+        resp = self.client.post(reverse('reassign_task'), {
+            'person': 'maman', 'task_id': 'repas', 'day': self.day, 'reassigned_to': 'maman',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(TaskException.objects.filter(kind='reassigned').exists())

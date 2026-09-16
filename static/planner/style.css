@@ -289,6 +289,7 @@ nav.tabs a .nav-icon{margin-right:6px;}
 .exception-controls select{flex:1;min-width:150px;padding:7px 9px;border-radius:9px;border:2px solid var(--navy);
   font-size:12px;font-weight:700;background:white;font-family:var(--font-body);}
 .exc-btn{padding:6px 12px;font-size:11.5px;flex-shrink:0;}
+.reassigned-note{font-size:11px;font-weight:800;color:var(--plum-dk);margin-left:4px;}
 
 /* ---- Mode du jour (DayMode : normal / vacances / absence / allégée) par carte ---- */
 .daymode-row{display:flex;align-items:center;gap:6px;margin:-6px 2px 8px;flex-wrap:wrap;}

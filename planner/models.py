@@ -219,24 +219,28 @@ TASK_EXCEPTION_KIND_CHOICES = [
     ('disabled_once', 'Désactivée pour ce jour'),
     ('disabled_from', 'Désactivée à partir de cette date'),
     ('not_applicable', "Non applicable ce jour (n'affecte pas le taux de complétion)"),
+    ('reassigned', 'Réattribuée à un autre membre pour ce jour'),
 ]
 
 
 class TaskException(models.Model):
     """An override on a generated (task_logic) or custom task, keyed by its task_id — lets
-    a parent skip a task for one day, suspend it indefinitely, or mark a day where it
-    doesn't apply without that counting against completion/star eligibility. See
-    task_logic.split_by_exceptions for how this is applied — management UI in views.py
-    (create_task_exception / reactivate_task_exception)."""
+    a parent skip a task for one day, suspend it indefinitely, mark a day where it doesn't
+    apply without that counting against completion/star eligibility, or hand it off to
+    another family member for one day. See task_logic.split_by_exceptions for how
+    disabled/not_applicable are applied, and views._reassignment_maps for 'reassigned'."""
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     person = models.CharField(max_length=10, choices=PERSON_CHOICES)
     task_id = models.CharField(max_length=60)
     kind = models.CharField(max_length=20, choices=TASK_EXCEPTION_KIND_CHOICES)
-    # For 'disabled_once' / 'not_applicable': the exact date it applies to.
+    # For 'disabled_once' / 'not_applicable' / 'reassigned': the exact date it applies to.
     # For 'disabled_from': the date from which the task is suspended (inclusive).
     date = models.DateField()
-    # Lets a 'disabled_from' suspension be explicitly reactivated (turned back on) without
-    # deleting the historical row — flip to False to reactivate.
+    # Only set (and only meaningful) for kind='reassigned': who the task is handed to for
+    # that date — the task disappears from `person`'s list and appears in this person's.
+    reassigned_to = models.CharField(max_length=10, choices=PERSON_CHOICES, blank=True, default='')
+    # Lets a 'disabled_from' suspension (or any other exception) be explicitly reactivated
+    # (turned back on) without deleting the historical row — flip to False to reactivate.
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

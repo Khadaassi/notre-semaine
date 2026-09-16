@@ -173,6 +173,7 @@ def today(request):
             'checkable_by_viewer': is_parent or person in ('fille', 'fils'),
             'level': levels.get(person, 1) if person in ('fille', 'fils') else None,
             'day_mode': day_mode,
+            'other_people': [(p, _person_label(p, settings)) for p in people if p != person],
         })
 
     day_chips = [{'key': d, 'label': DAY_FULL[d], 'full': DAY_FULL[d],
@@ -191,7 +192,8 @@ def today(request):
 
 def _exception_id_sets(family, person, date):
     """Splits a person's active TaskException rows for a given date into (disabled_ids,
-    not_applicable_ids) — see task_logic.split_by_exceptions for how these are applied."""
+    not_applicable_ids) — see task_logic.split_by_exceptions for how these are applied.
+    'reassigned' rows are handled separately by _reassignment_maps."""
     disabled_ids, not_applicable_ids = set(), set()
     for exc in TaskException.objects.filter(family=family, person=person, active=True):
         if exc.kind == 'disabled_once' and exc.date == date:
@@ -203,16 +205,46 @@ def _exception_id_sets(family, person, date):
     return disabled_ids, not_applicable_ids
 
 
+def _reassignment_maps(family, date):
+    """Splits active TaskException(kind='reassigned') rows for one date into:
+    - outgoing: person -> {task_id} handed away (dropped from that person's own list)
+    - incoming: person -> [(from_person, task_id)] handed to them for that date
+    See _apply_task_overrides for how both are folded into the final per-person task list;
+    this is what makes 'passer une tâche à l'autre parent' (point 5) work."""
+    outgoing, incoming = {}, {}
+    for exc in TaskException.objects.filter(family=family, kind='reassigned', active=True, date=date):
+        if not exc.reassigned_to:
+            continue
+        outgoing.setdefault(exc.person, set()).add(exc.task_id)
+        incoming.setdefault(exc.reassigned_to, []).append((exc.person, exc.task_id))
+    return outgoing, incoming
+
+
 def _apply_task_overrides(family, person, day, real_date, settings, activities, custom_tasks,
                            holiday_today, holiday_tomorrow, day_mode='normal', own_task_list=None):
     """Builds a person's final task list for one date: their generated/custom tasks, with
-    TaskException disabled/not_applicable overrides applied. Shared by views.today (display)
-    and _checkable_ids_for (completion/star calculation) so the two stay in lockstep."""
+    TaskException disabled/not_applicable overrides applied and reassignments folded in
+    (tasks handed off to this person appear here with a 'reassigned_from_label'; tasks
+    handed away disappear). Shared by views.today (display) and _checkable_ids_for
+    (completion/star calculation) so the two stay in lockstep."""
     if own_task_list is None:
         own_task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow,
                                    custom_tasks, day_mode=day_mode)
     disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
-    return split_by_exceptions(own_task_list, disabled_ids, not_applicable_ids)
+    outgoing, incoming = _reassignment_maps(family, real_date)
+    disabled_ids = disabled_ids | outgoing.get(person, set())
+    task_list = split_by_exceptions(own_task_list, disabled_ids, not_applicable_ids)
+    for from_person, task_id in incoming.get(person, []):
+        from_mode = active_day_mode(family, from_person, real_date)
+        from_list = tasks_for(from_person, day, settings, activities, holiday_today, holiday_tomorrow,
+                               custom_tasks, day_mode=from_mode)
+        source = next((x for x in from_list if x['id'] == task_id), None)
+        if source:
+            task_list.append(dict(
+                source, id=f'reassigned_{from_person}_{task_id}', not_applicable=False,
+                reassigned_from_label=_person_label(from_person, settings),
+            ))
+    return task_list
 
 
 def _checkable_ids_for(person, day, family):
@@ -677,8 +709,8 @@ def edit_custom_task(request, pk):
     """Classic edit for a CustomTask (label/person/days/period) — the "modifier" half of
     point 2. Only CustomTask rows are editable this way: a generated task_logic.py task
     (e.g. 'lit', 'priere_m') has no row to edit, since it's produced by a Python function,
-    not stored data — for those, see create_task_exception instead (disable a task; a
-    reassign-to-someone-else action follows in a later change)."""
+    not stored data — for those, see create_task_exception (disable) and reassign_task
+    (hand off to someone else) instead."""
     family = _get_family(request)
     task = CustomTask.objects.filter(pk=pk, family=family).first()
     if not task:
@@ -725,10 +757,39 @@ def create_task_exception(request):
 @login_required
 @parent_required
 @require_POST
+def reassign_task(request):
+    """Hands a task off to another family member for one day (point 5) by creating a
+    TaskException(kind='reassigned'): it disappears from `person`'s list and appears in
+    `reassigned_to`'s (see views._reassignment_maps / _apply_task_overrides). Chosen over a
+    dedicated reassignment table since TaskException already models "an override on a task
+    for a date" — adding a `reassigned_to` field reuses that shape instead of introducing a
+    parallel mechanism."""
+    family = _get_family(request)
+    person = request.POST.get('person')
+    task_id = request.POST.get('task_id', '').strip()
+    day = request.POST.get('day')
+    reassigned_to = request.POST.get('reassigned_to')
+    if (person not in PERSON_KEYS or reassigned_to not in PERSON_KEYS or person == reassigned_to
+            or not task_id or day not in DAYS):
+        messages.error(request, "Réattribution impossible.")
+        return redirect(f"{reverse('today')}?day={day}" if day in DAYS else reverse('today'))
+    real_date = _real_date_for_day(day)
+    TaskException.objects.create(
+        family=family, person=person, task_id=task_id, kind='reassigned', date=real_date,
+        reassigned_to=reassigned_to,
+    )
+    messages.success(request, "Tâche réattribuée pour ce jour.")
+    return redirect(f"{reverse('today')}?day={day}")
+
+
+@login_required
+@parent_required
+@require_POST
 def reactivate_task_exception(request, pk):
     """'Reactivating' means turning the underlying task back ON — see TaskException.active's
-    docstring: flipping active to False cancels the override, which is the one mechanism
-    point 1 asks for to review/undo any exception from the settings page."""
+    docstring: flipping active to False cancels the override (disable/not_applicable/
+    reassignment alike), which is the one mechanism point 1 asks for to review/undo any
+    exception from the settings page."""
     family = _get_family(request)
     exc = TaskException.objects.filter(pk=pk, family=family).first()
     if exc:

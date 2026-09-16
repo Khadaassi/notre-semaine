@@ -22,6 +22,7 @@ urlpatterns = [
     path('reglages/membre/<int:pk>/promouvoir/', views.promote_member, name='promote_member'),
     path('reglages/exception/<int:pk>/reactiver/', views.reactivate_task_exception, name='reactivate_task_exception'),
     path('taches/exception/ajouter/', views.create_task_exception, name='create_task_exception'),
+    path('taches/reassigner/', views.reassign_task, name='reassign_task'),
     path('taches/mode-jour/', views.set_day_mode, name='set_day_mode'),
     path('inscription/', views.signup, name='signup'),
 ]

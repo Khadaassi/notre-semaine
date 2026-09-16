@@ -31,6 +31,7 @@
         {% if task.info %}
           <div class="task info" data-task-row data-task-id="{{ task.id }}" data-person="{{ card.person }}">
             <span style="width:20px;text-align:center;">•</span><label>{{ task.label }}</label>
+            {% if task.reassigned_from_label %}<span class="reassigned-note">(à la place de {{ task.reassigned_from_label }})</span>{% endif %}
             {% if card.checkable_by_viewer %}
             <span class="reorder-btns">
               <button type="button" class="orderbtn" data-dir="up" aria-label="Monter">▲</button>
@@ -59,6 +60,7 @@
                    {% if task.done %}checked{% endif %} {% if not card.checkable_by_viewer %}disabled{% endif %}
                    class="task-toggle">
             <label for="task-{{ card.person }}-{{ task.id }}">{{ task.label }}</label>
+            {% if task.reassigned_from_label %}<span class="reassigned-note">(à la place de {{ task.reassigned_from_label }})</span>{% endif %}
             {% if card.checkable_by_viewer %}
             <button type="button" class="task-timer-toggle {% if task.timer_running %}running{% endif %}"
                     data-task-timer-toggle aria-label="Minuteur pour {{ task.label }}" aria-expanded="false">
@@ -91,6 +93,18 @@
                 </select>
                 <button type="submit" class="exc-btn">OK</button>
               </form>
+              {% if card.other_people %}
+              <form method="post" action="{% url 'reassign_task' %}">
+                {% csrf_token %}
+                <input type="hidden" name="person" value="{{ card.person }}">
+                <input type="hidden" name="task_id" value="{{ task.id }}">
+                <input type="hidden" name="day" value="{{ day }}">
+                <select name="reassigned_to">
+                  {% for p, label in card.other_people %}<option value="{{ p }}">{{ label }}</option>{% endfor %}
+                </select>
+                <button type="submit" class="exc-btn">Réattribuer</button>
+              </form>
+              {% endif %}
             </div>
             {% endif %}
           </div>
