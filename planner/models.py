@@ -74,10 +74,26 @@ class Activity(models.Model):
     person = models.CharField(max_length=10, choices=PERSON_CHOICES)
     label = models.CharField(max_length=100)
     day = models.CharField(max_length=10, choices=DAY_CHOICES)
-    time = models.CharField(max_length=20, blank=True, default='')
+    # Optional: a one-off occurrence on a precise calendar date, on top of the recurring
+    # weekly `day` above (e.g. a single rescheduled practice) — not yet surfaced in the UI.
+    specific_date = models.DateField(null=True, blank=True)
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
+    accompanied_by = models.CharField(max_length=10, choices=PERSON_CHOICES, blank=True, default='')
+    picked_up_by = models.CharField(max_length=10, choices=PERSON_CHOICES, blank=True, default='')
+    location = models.CharField(max_length=150, blank=True, default='')
+    items_to_bring = models.TextField(blank=True, default='')
 
     def __str__(self):
         return f"{self.get_person_display()} — {self.label} ({self.get_day_display()})"
+
+    def time_range_label(self):
+        """Formats start/end time for display — replaces the old freeform `time` text field."""
+        if self.start_time and self.end_time:
+            return f"{self.start_time.strftime('%Hh%M')}–{self.end_time.strftime('%Hh%M')}"
+        if self.start_time:
+            return self.start_time.strftime('%Hh%M')
+        return ''
 
 
 class TaskCompletion(models.Model):

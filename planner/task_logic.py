@@ -3,6 +3,7 @@ Pure functions that generate each family member's task list for a given day.
 This mirrors the logic of the original single-file prototype, ported to Python.
 """
 import datetime
+import re
 
 DAYS = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche']
 DAY_FULL = {'lundi': 'Lundi', 'mardi': 'Mardi', 'mercredi': 'Mercredi', 'jeudi': 'Jeudi',
@@ -47,6 +48,25 @@ def activities_for(person, day, activities):
     return [a for a in activities if a.person == person and a.day == day]
 
 
+_FREE_TIME_RE = re.compile(r'(\d{1,2})\s*[h:]\s*(\d{2})?')
+
+
+def parse_free_time(text):
+    """Best-effort parse of a freeform time string (e.g. '17h30', '17:30', '9h') into a
+    datetime.time, for the settings 'add activity' form which still collects a single
+    text field pending the routines-v2 UI rework. Returns None if nothing looks like a time."""
+    if not text:
+        return None
+    match = _FREE_TIME_RE.search(text)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return datetime.time(hour, minute)
+
+
 def douche_today(kid, day, activities):
     sport = len(activities_for(kid, day, activities)) > 0
     idx = DAYS.index(day)
@@ -59,7 +79,8 @@ def _own_activity_tasks(person, day, activities):
     from _kid_activity_drive_tasks, which is papa driving a *kid* to theirs."""
     tasks = []
     for i, a in enumerate(activities_for(person, day, activities)):
-        label = a.label + (f" ({a.time}, à confirmer)" if a.time else '')
+        time_label = a.time_range_label()
+        label = a.label + (f" ({time_label}, à confirmer)" if time_label else '')
         tasks.append(t(f'activite{i}', label, 'soir'))
     return tasks
 
@@ -316,7 +337,8 @@ def _kid_activity_drive_tasks(day, settings, activities):
         kids.append(('fils', settings.fils_name))
     for kid, name in kids:
         for i, a in enumerate(activities_for(kid, day, activities)):
-            label = f"Emmener {name} à {a.label}" + (f" ({a.time}, à confirmer)" if a.time else '')
+            time_label = a.time_range_label()
+            label = f"Emmener {name} à {a.label}" + (f" ({time_label}, à confirmer)" if time_label else '')
             tasks.append(t(f'drive_{kid}{i}', label, 'soir'))
     return tasks
 

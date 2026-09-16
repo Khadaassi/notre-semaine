@@ -22,7 +22,7 @@ from .models import (
 )
 from .task_logic import (
     DAYS, DAY_FULL, tasks_for, next_day, pillar_for, is_zone_b_holiday, DEEP_CLEAN_ROOMS,
-    group_by_phase, apply_order,
+    group_by_phase, apply_order, parse_free_time,
 )
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
 
@@ -377,7 +377,7 @@ def week_view(request):
         menage_cells.append([f"{' & '.join(names)} : {label}" for label, names in by_label.items()])
 
         activites_cells.append([
-            f"{_person_label(a.person, settings)} : {a.label}" + (f" ({a.time})" if a.time else '')
+            f"{_person_label(a.person, settings)} : {a.label}" + (f" ({a.time_range_label()})" if a.time_range_label() else '')
             for a in activities if a.day == d and a.person in people
         ])
 
@@ -525,7 +525,7 @@ def settings_view(request):
                     person=request.POST.get('act_person', 'fils'),
                     label=label,
                     day=request.POST.get('act_day', 'lundi'),
-                    time=request.POST.get('act_time', '').strip(),
+                    start_time=parse_free_time(request.POST.get('act_time', '')),
                 )
                 messages.success(request, "Activité ajoutée.")
         elif 'add_custom_task' in request.POST:
