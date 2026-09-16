@@ -21,10 +21,10 @@
           </div>
         {% else %}
           <div class="task {% if task.done %}done{% endif %}" data-task-row data-task-id="{{ task.id }}" data-person="{{ card.person }}">
-            <input type="checkbox" data-person="{{ card.person }}" data-task="{{ task.id }}"
+            <input type="checkbox" id="task-{{ card.person }}-{{ task.id }}" data-person="{{ card.person }}" data-task="{{ task.id }}"
                    {% if task.done %}checked{% endif %} {% if not card.checkable_by_viewer %}disabled{% endif %}
                    class="task-toggle">
-            <label>{{ task.label }}</label>
+            <label for="task-{{ card.person }}-{{ task.id }}">{{ task.label }}</label>
             {% if card.checkable_by_viewer %}
             <button type="button" class="timerbtn {% if task.timer_running %}running{% endif %}"
                     data-person="{{ card.person }}" data-task="{{ task.id }}"

@@ -41,8 +41,8 @@
       <h3>{{ cat }}</h3>
       {% for item in items %}
         <div class="task {% if item.checked %}done{% endif %}">
-          <input type="checkbox" class="course-toggle" data-id="{{ item.id }}" {% if item.checked %}checked{% endif %}>
-          <label>{{ item.name }}</label>
+          <input type="checkbox" id="course-{{ item.id }}" class="course-toggle" data-id="{{ item.id }}" {% if item.checked %}checked{% endif %}>
+          <label for="course-{{ item.id }}">{{ item.name }}</label>
         </div>
       {% endfor %}
     </div>
