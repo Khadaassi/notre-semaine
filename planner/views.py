@@ -17,7 +17,7 @@ from django_ratelimit.decorators import ratelimit
 
 from .forms import SignUpForm, RecipeForm
 from .models import (
-    Family, FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem,
+    FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem,
     CustomTask, FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars, TaskException,
 )
 from .task_logic import (
@@ -41,9 +41,7 @@ def signup(request):
         form = SignUpForm(request.POST)
         if form.is_valid():
             with transaction.atomic():
-                # Lock the family row so two concurrent signups can't both see "no parent
-                # yet" and both get auto-promoted.
-                family = Family.objects.select_for_update().get(pk=form.matched_family.pk)
+                family = form.matched_family
                 is_first_member = not FamilyMembership.objects.filter(family=family).exists()
                 role = 'maman' if is_first_member else 'enfants'
                 user = form.save()
