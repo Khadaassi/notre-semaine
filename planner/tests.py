@@ -1,14 +1,17 @@
 import datetime
 
+from django.apps import apps as django_apps
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 
 from .models import (
     Family, FamilySettings, FamilyMembership, PARENT_ROLES, StarAward, KidStars,
-    TaskCompletion, TaskException,
+    TaskCompletion, TaskException, CustomTask,
 )
-from .task_logic import is_zone_b_holiday, ZONE_B_HOLIDAYS
+from .task_logic import is_zone_b_holiday, ZONE_B_HOLIDAYS, tasks_for
 from .views import _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day
 
 
@@ -163,3 +166,107 @@ class SignupRoleTests(TestCase):
         self.assertEqual(resp.status_code, 302)
         membership = FamilyMembership.objects.get(user__username='seconduser')
         self.assertEqual(membership.role, 'enfants')
+
+
+class DayModeTaskFilteringTests(TestCase):
+    """task_logic.tasks_for's day_mode wiring (routines-v2 point 4): 'absence' drops
+    school/activity/work tasks but keeps the core routine; 'allegee' drops only heavy
+    chores/full homework; 'vacances' folds into holiday_today."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='DM', invite_code='DAYMODEFAM1')
+        self.settings = FamilySettings.load(self.family)
+
+    def test_absence_drops_school_but_keeps_core_routine(self):
+        normal_ids = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, [])}
+        absence_ids = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, [], day_mode='absence')}
+        self.assertIn('ecole', normal_ids)
+        self.assertNotIn('ecole', absence_ids)
+        for keep_id in ('lit', 'oudou_m', 'priere_m', 'petitdej', 'brossage_m'):
+            self.assertIn(keep_id, absence_ids)
+        self.assertLess(len(absence_ids), len(normal_ids))
+
+    def test_allegee_drops_heavy_chores_but_keeps_most_tasks(self):
+        normal_ids = {t['id'] for t in tasks_for('maman', 'mercredi', self.settings, [])}
+        allegee_ids = {t['id'] for t in tasks_for('maman', 'mercredi', self.settings, [], day_mode='allegee')}
+        self.assertIn('deepclean', normal_ids)
+        self.assertIn('lessive', normal_ids)
+        self.assertNotIn('deepclean', allegee_ids)
+        self.assertNotIn('lessive', allegee_ids)
+        self.assertIn('petitdej_famille', allegee_ids)
+        self.assertLess(len(allegee_ids), len(normal_ids))
+
+    def test_vacances_mode_behaves_like_a_holiday_for_that_person(self):
+        vac_ids = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, [], day_mode='vacances')}
+        self.assertNotIn('ecole', vac_ids)
+        self.assertIn('vacances', vac_ids)
+
+    def test_normal_mode_is_a_no_op(self):
+        normal_ids = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, [])}
+        explicit_normal_ids = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, [], day_mode='normal')}
+        self.assertEqual(normal_ids, explicit_normal_ids)
+
+
+class CustomTaskMultiDayTests(TestCase):
+    """CustomTask.days replaces the old single-value `day` (routines-v2 point 3): a task
+    can recur on several week days, and task_logic.tasks_for filters on membership in that
+    list rather than equality."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='CT', invite_code='CUSTOMTASKFAM1')
+        self.settings = FamilySettings.load(self.family)
+
+    def test_multi_day_custom_task_appears_on_every_selected_day_only(self):
+        task = CustomTask.objects.create(
+            family=self.family, person='fille', days=['lundi', 'mercredi'], period='soir', label='Piano',
+        )
+        lundi_ids = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, [], custom_tasks=[task])}
+        mardi_ids = {t['id'] for t in tasks_for('fille', 'mardi', self.settings, [], custom_tasks=[task])}
+        mercredi_ids = {t['id'] for t in tasks_for('fille', 'mercredi', self.settings, [], custom_tasks=[task])}
+        self.assertIn(f'custom_{task.id}', lundi_ids)
+        self.assertIn(f'custom_{task.id}', mercredi_ids)
+        self.assertNotIn(f'custom_{task.id}', mardi_ids)
+
+    def test_days_display_lists_selected_days_in_order(self):
+        task = CustomTask.objects.create(
+            family=self.family, person='fille', days=['mercredi', 'lundi'], period='matin', label='Test',
+        )
+        self.assertEqual(task.days_display(), 'Mercredi, Lundi')
+
+
+
+class CustomTaskDaysDataMigrationTests(TransactionTestCase):
+    """Exercises the CustomTask day -> days data migration (0016_customtask_populate_days)
+    end to end using Django's documented MigrationExecutor pattern, so it runs the actual
+    migration code against a real (non-empty) table rather than re-implementing the
+    conversion — see also the manual empty-DB and populated-DB checks performed while
+    building this migration (python manage.py migrate on a fresh and on a seeded sqlite
+    file), which this test automates for the populated-DB case."""
+
+    def test_existing_day_value_becomes_a_singleton_days_list(self):
+        migrate_from = [('planner', '0015_customtask_add_days')]
+        migrate_to = [('planner', '0017_customtask_remove_day')]
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(migrate_from)
+        try:
+            old_apps = executor.loader.project_state(migrate_from).apps
+            OldFamily = old_apps.get_model('planner', 'Family')
+            OldCustomTask = old_apps.get_model('planner', 'CustomTask')
+            family = OldFamily.objects.create(name='Mig', invite_code='MIGCODE1')
+            OldCustomTask.objects.create(
+                family=family, person='fille', day='lundi', period='matin', label='Legacy', days=[]
+            )
+
+            executor = MigrationExecutor(connection)
+            executor.migrate(migrate_to)
+            new_apps = executor.loader.project_state(migrate_to).apps
+            NewCustomTask = new_apps.get_model('planner', 'CustomTask')
+            task = NewCustomTask.objects.get(label='Legacy')
+            self.assertEqual(task.days, ['lundi'])
+        finally:
+            # Bring the schema all the way back to the latest state so tests that run
+            # after this one in the same process see the real, current models.
+            executor = MigrationExecutor(connection)
+            executor.migrate(executor.loader.graph.leaf_nodes())
+            django_apps.clear_cache()

@@ -191,20 +191,28 @@ class WeeklyMenuEntry(models.Model):
 PHASE_CHOICES = [('matin', 'Matin'), ('journee', 'Journée'), ('soir', 'Soir')]
 
 
+DAY_LABELS = dict(DAY_CHOICES)
+
+
 class CustomTask(models.Model):
     """A task added from the UI, on top of the built-in routine — same shape (person,
-    day, a time-of-day slot), rendered alongside the built-in tasks in 'Aujourd'hui'."""
+    a time-of-day slot), rendered alongside the built-in tasks in 'Aujourd'hui'. `days` is
+    the list of weekday keys it recurs on (its "frequency") — replaces the old single-day
+    `day` field (see the 0015-0017 migrations for the day -> days conversion)."""
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     person = models.CharField(max_length=10, choices=PERSON_CHOICES)
-    day = models.CharField(max_length=10, choices=DAY_CHOICES)
+    days = models.JSONField(default=list, blank=True)
     period = models.CharField(max_length=10, choices=PHASE_CHOICES, default='matin')
     label = models.CharField(max_length=150)
 
     class Meta:
-        ordering = ['day', 'period', 'id']
+        ordering = ['period', 'id']
 
     def __str__(self):
-        return f"{self.get_person_display()} — {self.label} ({self.get_day_display()})"
+        return f"{self.get_person_display()} — {self.label} ({self.days_display()})"
+
+    def days_display(self):
+        return ', '.join(DAY_LABELS.get(d, d) for d in self.days)
 
 
 TASK_EXCEPTION_KIND_CHOICES = [
