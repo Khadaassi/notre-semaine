@@ -9,7 +9,7 @@ from .models import (
     TaskCompletion, TaskException,
 )
 from .task_logic import is_zone_b_holiday, ZONE_B_HOLIDAYS
-from .views import _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day
+from .views import _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _level_for
 
 
 class ParentRequiredViewsTests(TestCase):
@@ -163,3 +163,77 @@ class SignupRoleTests(TestCase):
         self.assertEqual(resp.status_code, 302)
         membership = FamilyMembership.objects.get(user__username='seconduser')
         self.assertEqual(membership.role, 'enfants')
+
+
+class ConfigurableStarMilestoneTests(TestCase):
+    """FamilySettings.star_milestone must drive the surprise threshold and the level badge
+    per family, instead of the old fixed STAR_MILESTONE=15 constant."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Test', invite_code='MILESTEST1')
+        self.settings = FamilySettings.load(self.family)
+        self.settings.star_milestone = 3
+        self.settings.star_reward_text = 'Une glace au choix !'
+        self.settings.save()
+        self.day = 'lundi'
+        self.person = 'fille'
+        self.checkable_ids = _checkable_ids_for(self.person, self.day, self.family)
+        self.assertTrue(self.checkable_ids)
+
+    def _complete_day(self, real_date):
+        for task_id in self.checkable_ids:
+            TaskCompletion.objects.update_or_create(
+                family=self.family, person=self.person, date=real_date, task_id=task_id,
+                defaults={'done': True},
+            )
+        return _award_star_if_day_complete(self.family, self.person, self.day, real_date)
+
+    def test_milestone_reached_at_configured_threshold_not_fifteen(self):
+        base_date = _real_date_for_day(self.day)
+        results = [self._complete_day(base_date - datetime.timedelta(days=7 * i)) for i in range(3)]
+
+        milestone_flags = [r[0] for r in results]
+        # Only the 3rd fully-completed day (our custom threshold) should trigger the popup.
+        self.assertEqual(milestone_flags, [False, False, True])
+        self.assertEqual(results[-1][1], 3)  # cumulative stars total
+        self.assertEqual(results[-1][2], 'Une glace au choix !')  # parent-defined reward text
+
+    def test_reward_text_absent_when_milestone_not_reached(self):
+        base_date = _real_date_for_day(self.day)
+        milestone_reached, _, reward_text = self._complete_day(base_date)
+        self.assertFalse(milestone_reached)
+        self.assertIsNone(reward_text)
+
+    def test_default_generic_reward_when_no_custom_text_set(self):
+        self.settings.star_reward_text = ''
+        self.settings.save()
+        base_date = _real_date_for_day(self.day)
+        results = [self._complete_day(base_date - datetime.timedelta(days=7 * i)) for i in range(3)]
+        self.assertTrue(results[-1][0])
+        self.assertIsNone(results[-1][2])  # no custom text -> template falls back to MILESTONE_MSG
+
+    def test_level_uses_family_milestone_not_global_constant(self):
+        # stars_per_level = milestone * 6 = 18 when star_milestone == 3.
+        self.assertEqual(_level_for(17, self.settings.star_milestone), 1)
+        self.assertEqual(_level_for(18, self.settings.star_milestone), 2)
+
+
+class SettingsRewardFormTests(TestCase):
+    """Covers the new 'Récompenses' form in settings.html: updating the reward
+    threshold/text — parent-only, like every other settings form."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Test', invite_code='SETFORM1')
+        self.parent_user = User.objects.create_user('parentform', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent_user, family=self.family, role='maman')
+        self.settings = FamilySettings.load(self.family)
+
+    def test_parent_can_update_reward_settings(self):
+        self.client.force_login(self.parent_user)
+        resp = self.client.post(reverse('settings'), {
+            'save_rewards': '1', 'star_milestone': '7', 'star_reward_text': 'Un ciné !',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.settings.refresh_from_db()
+        self.assertEqual(self.settings.star_milestone, 7)
+        self.assertEqual(self.settings.star_reward_text, 'Un ciné !')

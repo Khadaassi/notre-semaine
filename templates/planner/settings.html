@@ -109,6 +109,23 @@
 </div>
 
 <div class="card">
+  <h2>Récompenses</h2>
+  <div class="hint">Après combien de journées entièrement cochées la surprise se déclenche, et quel cadeau proposer.</div>
+  <form method="post">
+    {% csrf_token %}
+    <div class="settingsrow">
+      <label>Nombre de journées avant la surprise</label>
+      <input type="number" name="star_milestone" min="1" value="{{ settings.star_milestone }}">
+    </div>
+    <div class="settingsrow">
+      <label>Texte de la récompense (facultatif)</label>
+      <input type="text" name="star_reward_text" placeholder="Ex : une sortie au parc !" value="{{ settings.star_reward_text }}">
+    </div>
+    <button type="submit" name="save_rewards" value="1">Enregistrer</button>
+  </form>
+</div>
+
+<div class="card">
   <h2>Membres de la famille</h2>
   <div class="hint">Ces comptes ont accès à toutes les données ci-dessus.</div>
   {% for m in members %}

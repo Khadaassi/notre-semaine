@@ -38,6 +38,8 @@ const CONGRATS_GENDERED = {
   fils: ["Sois fier de toi !", "Je suis fier de toi !", "Champion du jour !"],
 };
 const CONFETTI_COLORS = ['var(--coral)', 'var(--mint)', 'var(--sun)', 'var(--plum)', 'var(--navy-2)'];
+// Generic fallback used only when the family hasn't set a custom reward text in the settings
+// (FamilySettings.star_reward_text) — the real text comes from the server, see celebrateMilestone.
 const MILESTONE_MSG = "Bravo, tu as complété une série entière ! Pour te féliciter, Maman et Papa ont un cadeau pour toi !";
 
 function randomCongrats(person) {
@@ -74,7 +76,7 @@ function celebrate(person) {
   setTimeout(dismiss, 2800);
 }
 
-function celebrateMilestone(person, total) {
+function celebrateMilestone(person, total, rewardText) {
   const overlay = document.createElement('div');
   overlay.className = 'celebrate-overlay milestone-overlay';
   overlay.innerHTML = `
@@ -84,7 +86,7 @@ function celebrateMilestone(person, total) {
       <div class="celebrate-msg"></div>
       ${total ? `<div class="milestone-count"><span class="star-char">★</span> ${total}</div>` : ''}
     </div>`;
-  overlay.querySelector('.celebrate-msg').textContent = MILESTONE_MSG;
+  overlay.querySelector('.celebrate-msg').textContent = rewardText || MILESTONE_MSG;
   if (!reducedMotion()) { spawnConfetti(overlay, 45); spawnConfetti(overlay, 18, true); }
   document.body.appendChild(overlay);
   const dismiss = () => { overlay.classList.add('fade-out'); setTimeout(() => overlay.remove(), 300); };
@@ -157,7 +159,7 @@ document.querySelectorAll('.task-toggle').forEach(cb=>{
           celebrate(person);
         }
         if (data && data.milestone_reached) {
-          celebrateMilestone(person, data.stars_total);
+          celebrateMilestone(person, data.stars_total, data.reward_text);
         }
       })
       .catch(()=>{

@@ -27,12 +27,13 @@ from .task_logic import (
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
 
 PERSON_LABELS_STATIC = {'maman': 'Maman'}
-STAR_MILESTONE = 15  # every Nth fully-completed day surfaces the surprise reward popup
-STARS_PER_LEVEL = STAR_MILESTONE * 6  # cosmetic "Niv." badge — one level per 6 surprises (~12 weeks)
 
 
-def _level_for(total_stars):
-    return total_stars // STARS_PER_LEVEL + 1
+def _level_for(total_stars, milestone):
+    """Cosmetic "Niv." badge — one level per 6 surprises, scaled to that family's own
+    star_milestone (see FamilySettings.star_milestone) instead of a fixed constant."""
+    stars_per_level = max(1, milestone) * 6
+    return total_stars // stars_per_level + 1
 
 
 @ratelimit(key='ip', rate='10/h', method='POST', block=True)
@@ -131,7 +132,7 @@ def today(request):
     orders = {}
     for o in TaskOrder.objects.filter(family=family):
         orders.setdefault(o.person, {})[o.task_id] = o.order
-    levels = {s.person: _level_for(s.total) for s in KidStars.objects.filter(family=family)}
+    levels = {s.person: _level_for(s.total, settings.star_milestone) for s in KidStars.objects.filter(family=family)}
 
     cards = []
     for person in people:
@@ -211,26 +212,33 @@ def _checkable_ids_for(person, day, family):
 def _award_star_if_day_complete(family, person, day, real_date):
     """Called after a kid's task is checked off. If that completes every checkable task for
     the day, silently banks one star (see StarAward/KidStars) and reports whether this star
-    just crossed a STAR_MILESTONE threshold — the one moment the kid actually sees anything."""
+    just crossed that family's star_milestone threshold (FamilySettings.star_milestone) — the
+    one moment the kid actually sees anything. Also returns the parent-defined reward text
+    (FamilySettings.star_reward_text) when a milestone was just reached, so the caller can pass
+    it through to the celebration popup instead of a hardcoded message."""
     checkable_ids = _checkable_ids_for(person, day, family)
     if not checkable_ids:
-        return False, None
+        return False, None, None
     done_ids = set(TaskCompletion.objects.filter(
         family=family, person=person, date=real_date, done=True
     ).values_list('task_id', flat=True))
     if not checkable_ids.issubset(done_ids):
-        return False, None
+        return False, None, None
     _, created = StarAward.objects.get_or_create(family=family, person=person, date=real_date)
     if not created:
-        return False, None
+        return False, None, None
+    settings = FamilySettings.load(family)
+    milestone = max(1, settings.star_milestone)
     stars, _ = KidStars.objects.get_or_create(family=family, person=person)
     stars.total += 1
-    reached = stars.total // STAR_MILESTONE
+    reached = stars.total // milestone
     milestone_reached = reached > stars.milestones_shown
+    reward_text = None
     if milestone_reached:
         stars.milestones_shown = reached
+        reward_text = settings.star_reward_text or None
     stars.save()
-    return milestone_reached, stars.total
+    return milestone_reached, stars.total, reward_text
 
 
 @login_required
@@ -247,10 +255,13 @@ def toggle_task(request):
     TaskCompletion.objects.update_or_create(
         family=family, person=person, date=real_date, task_id=task_id, defaults={'done': done}
     )
-    milestone_reached, stars_total = False, None
+    milestone_reached, stars_total, reward_text = False, None, None
     if done and person in ('fille', 'fils'):
-        milestone_reached, stars_total = _award_star_if_day_complete(family, person, day, real_date)
-    return JsonResponse({'ok': True, 'milestone_reached': milestone_reached, 'stars_total': stars_total})
+        milestone_reached, stars_total, reward_text = _award_star_if_day_complete(family, person, day, real_date)
+    return JsonResponse({
+        'ok': True, 'milestone_reached': milestone_reached, 'stars_total': stars_total,
+        'reward_text': reward_text,
+    })
 
 
 @login_required
@@ -303,6 +314,7 @@ def reorder_tasks(request):
 def stars_view(request):
     family = _get_family(request)
     settings = FamilySettings.load(family)
+    milestone = max(1, settings.star_milestone)
     kids = [p for p in _family_people(settings) if p in ('fille', 'fils')]
     today = datetime.date.today()
     days = [today - datetime.timedelta(days=i) for i in range(27, -1, -1)]
@@ -322,9 +334,9 @@ def stars_view(request):
             'person': kid,
             'name': _person_label(kid, settings),
             'total': stars.total,
-            'level': _level_for(stars.total),
-            'in_cycle': stars.total % STAR_MILESTONE,
-            'milestone': STAR_MILESTONE,
+            'level': _level_for(stars.total, milestone),
+            'in_cycle': stars.total % milestone,
+            'milestone': milestone,
             'streak': streak,
             'days': [{'date': d, 'filled': d in awarded_dates, 'is_today': d == today} for d in days],
         })
@@ -556,6 +568,15 @@ def settings_view(request):
                     label=label,
                 )
                 messages.success(request, "Tâche ajoutée.")
+        elif 'save_rewards' in request.POST:
+            try:
+                milestone = int(request.POST.get('star_milestone', settings.star_milestone))
+            except (TypeError, ValueError):
+                milestone = settings.star_milestone
+            settings.star_milestone = max(1, milestone)
+            settings.star_reward_text = request.POST.get('star_reward_text', '').strip()
+            settings.save()
+            messages.success(request, "Récompense enregistrée.")
         else:
             settings.maman_name = request.POST.get('maman_name', settings.maman_name).strip() or settings.maman_name
             settings.fille_name = request.POST.get('fille_name', settings.fille_name).strip() or settings.fille_name

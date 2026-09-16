@@ -55,6 +55,15 @@ class FamilySettings(models.Model):
     rotation_table = models.CharField(max_length=10, choices=PERSON_CHOICES, default='fille')
     rotation_lave_vaisselle = models.CharField(max_length=10, choices=PERSON_CHOICES, default='fils')
     week_note = models.TextField(blank=True, default='')
+    # Reward settings (see views._award_star_if_day_complete / views.stars_view): configurable
+    # per family instead of the old global STAR_MILESTONE constant.
+    star_milestone = models.PositiveIntegerField(
+        default=15, help_text="Nombre de journées entièrement cochées avant la surprise."
+    )
+    star_reward_text = models.CharField(
+        max_length=200, blank=True, default='',
+        help_text="Texte affiché dans le popup de surprise (facultatif — sinon message générique)."
+    )
 
     class Meta:
         verbose_name = "Réglages famille"
@@ -145,7 +154,7 @@ class StarAward(models.Model):
 
 class KidStars(models.Model):
     """Cumulative reward-star count per kid. Individual stars aren't shown to the kid —
-    only the milestone (every STAR_MILESTONE, see views.py) surfaces as a surprise."""
+    only the milestone (every FamilySettings.star_milestone, see views.py) surfaces as a surprise."""
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     person = models.CharField(max_length=10, choices=PERSON_CHOICES)
     total = models.PositiveIntegerField(default=0)
