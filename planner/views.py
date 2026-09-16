@@ -1,6 +1,7 @@
 import datetime
 import functools
 import json
+from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
 from django.contrib.auth import login
@@ -20,6 +21,7 @@ from .forms import SignUpForm, RecipeForm
 from .models import (
     FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem,
     CustomTask, FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars, TaskException,
+    format_quantity,
 )
 from .task_logic import (
     DAYS, DAY_FULL, tasks_for, next_day, pillar_for, is_zone_b_holiday, DEEP_CLEAN_ROOMS,
@@ -28,6 +30,7 @@ from .task_logic import (
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
 
 PERSON_LABELS_STATIC = {'maman': 'Maman'}
+MENU_GROCERY_CATEGORY = 'Menu de la semaine'  # category tag used by copy_to_courses (see menu())
 
 
 def _level_for(total_stars, milestone):
@@ -439,7 +442,7 @@ def maison(request):
     for i in items:
         grouped.setdefault(i.category or 'Ajoutés', []).append(i)
     return render(request, 'planner/maison.html', {
-        'settings': settings, 'grouped': grouped,
+        'settings': settings, 'grouped': grouped, 'menu_category': MENU_GROCERY_CATEGORY,
     })
 
 
@@ -474,6 +477,56 @@ def reset_grocery(request):
 
 
 @login_required
+@require_POST
+def toggle_grocery_home(request):
+    """Toggles 'already_home' (Lot 4, point 2) — marks an item as already owned so it's
+    visually excluded from the "à acheter" view without removing it from the list."""
+    family = _get_family(request)
+    item = GroceryItem.objects.get(pk=request.POST['item_id'], family=family)
+    item.already_home = request.POST['already_home'] == '1'
+    item.save(update_fields=['already_home'])
+    return JsonResponse({'ok': True})
+
+
+@login_required
+@require_POST
+def edit_grocery(request):
+    """Renames/recategorizes/requantifies an existing grocery item (Lot 4, point 4)."""
+    family = _get_family(request)
+    item = GroceryItem.objects.get(pk=request.POST.get('item_id'), family=family)
+    name = request.POST.get('name', '').strip()
+    if not name:
+        messages.error(request, "Le nom de l'article ne peut pas être vide.")
+        return redirect('maison')
+    item.name = name
+    item.category = request.POST.get('category', '').strip()
+    qty_raw = request.POST.get('quantity', '').strip()
+    if qty_raw:
+        try:
+            item.quantity = Decimal(qty_raw.replace(',', '.'))
+        except InvalidOperation:
+            messages.error(request, "Quantité invalide.")
+            return redirect('maison')
+    else:
+        item.quantity = None
+    item.unit = request.POST.get('unit', '').strip()
+    item.save()
+    messages.success(request, "Article modifié.")
+    return redirect('maison')
+
+
+@login_required
+@require_POST
+def delete_grocery(request):
+    """Deletes a grocery item outright (Lot 4, point 4) — separate from toggle_grocery,
+    which only checks/unchecks it."""
+    family = _get_family(request)
+    GroceryItem.objects.filter(pk=request.POST.get('item_id'), family=family).delete()
+    messages.success(request, "Article supprimé.")
+    return redirect('maison')
+
+
+@login_required
 @parent_required
 @require_POST
 def toggle_rotation(request):
@@ -493,15 +546,26 @@ def menu(request):
     family = _get_family(request)
     _ensure_seed_data(family)
     week_start = _monday_of(datetime.date.today())
-    recipes = Recipe.objects.filter(family=family)
+    # Unfiltered — used for the per-day recipe dropdown, which must always offer every
+    # recipe regardless of the "favoris" display filter below.
+    recipes = Recipe.objects.filter(family=family).order_by('-is_favorite', 'category', 'name')
+    favoris_only = request.GET.get('favoris') == '1'
+    display_recipes = recipes.filter(is_favorite=True) if favoris_only else recipes
     by_cat = {}
-    for r in recipes:
+    for r in display_recipes:
         by_cat.setdefault(r.category, []).append(r)
 
     entries = {e.day: e.recipe_id for e in WeeklyMenuEntry.objects.filter(family=family, week_start=week_start)}
     chosen_ids = [v for v in entries.values() if v]
     chosen_recipes = Recipe.objects.filter(family=family, id__in=chosen_ids)
-    all_ingredients = sorted({ing for r in chosen_recipes for ing in r.ingredients})
+    all_ingredients = Recipe.aggregate_ingredients(chosen_recipes)
+    for ing in all_ingredients:
+        qty_text = format_quantity(ing['quantity'])
+        ing['quantity_display'] = f"{qty_text} {ing['unit']}".strip() if qty_text else ing['unit']
+
+    day_rows = [{'day': d, 'label': DAY_FULL[d], 'selected': entries.get(d)} for d in DAYS]
+    recipe_form = RecipeForm()
+    pending_conflicts = None
 
     if request.method == 'POST':
         if 'add_recipe' in request.POST:
@@ -511,12 +575,13 @@ def menu(request):
                 recipe.family = family
                 recipe.save()
                 messages.success(request, "Recette enregistrée.")
-            return redirect('menu')
-        if 'delete_recipe' in request.POST:
+                return redirect('menu')
+            recipe_form = form
+        elif 'delete_recipe' in request.POST:
             Recipe.objects.filter(id=request.POST['delete_recipe'], family=family).delete()
             messages.success(request, "Recette supprimée.")
             return redirect('menu')
-        if 'set_day' in request.POST:
+        elif 'set_day' in request.POST:
             day = request.POST['set_day']
             recipe_id = request.POST.get('recipe_id') or None
             if recipe_id and not Recipe.objects.filter(id=recipe_id, family=family).exists():
@@ -526,19 +591,57 @@ def menu(request):
                 family=family, week_start=week_start, day=day, defaults={'recipe_id': recipe_id}
             )
             return redirect('menu')
-        if 'copy_to_courses' in request.POST:
-            for ing in all_ingredients:
-                GroceryItem.objects.get_or_create(family=family, name=ing, defaults={'category': 'Menu de la semaine'})
-            messages.success(request, "Ingrédients ajoutés à la liste de courses.")
-            return redirect('menu')
-
-    recipe_form = RecipeForm()
-    day_rows = [{'day': d, 'label': DAY_FULL[d], 'selected': entries.get(d)} for d in DAYS]
+        elif 'copy_to_courses' in request.POST:
+            # Explicit conflict handling (Lot 4, point 5): copy_to_courses used to be a
+            # silent get_or_create — an item already checked "acheté" that becomes needed
+            # again (new week, ingredient required again) stayed silently checked, even
+            # though it should be bought again. Now: if any needed ingredient already
+            # exists as a *checked* GroceryItem, we stop and ask explicitly (pending_conflicts
+            # below) instead of guessing either way. `resolve_returning` ('uncheck' puts them
+            # back to "à acheter", 'keep' leaves them checked as-is) is how the confirmation
+            # screen answers that question; recipes/quantities are recomputed from the current
+            # weekly menu rather than trusted from the first request.
+            resolution = request.POST.get('resolve_returning')
+            names = [ing['name'] for ing in all_ingredients]
+            existing_by_name = {i.name: i for i in GroceryItem.objects.filter(family=family, name__in=names)}
+            returning_checked = [
+                existing_by_name[n] for n in names
+                if existing_by_name.get(n) is not None and existing_by_name[n].checked
+            ]
+            if returning_checked and resolution not in ('uncheck', 'keep'):
+                pending_conflicts = returning_checked
+            else:
+                for ing in all_ingredients:
+                    item = existing_by_name.get(ing['name'])
+                    if item is None:
+                        GroceryItem.objects.create(
+                            family=family, name=ing['name'], category=MENU_GROCERY_CATEGORY,
+                            quantity=ing['quantity'], unit=ing['unit'],
+                        )
+                    else:
+                        item.quantity = ing['quantity']
+                        item.unit = ing['unit']
+                        if resolution == 'uncheck' and item.checked:
+                            item.checked = False
+                        item.save(update_fields=['quantity', 'unit', 'checked'])
+                messages.success(request, "Ingrédients ajoutés à la liste de courses.")
+                return redirect('menu')
 
     return render(request, 'planner/menu.html', {
         'by_cat': by_cat, 'day_rows': day_rows, 'recipes': recipes,
         'all_ingredients': all_ingredients, 'recipe_form': recipe_form,
+        'favoris_only': favoris_only, 'pending_conflicts': pending_conflicts,
     })
+
+
+@login_required
+@require_POST
+def toggle_recipe_favorite(request):
+    family = _get_family(request)
+    recipe = Recipe.objects.get(pk=request.POST['recipe_id'], family=family)
+    recipe.is_favorite = request.POST['is_favorite'] == '1'
+    recipe.save(update_fields=['is_favorite'])
+    return JsonResponse({'ok': True})
 
 
 @login_required

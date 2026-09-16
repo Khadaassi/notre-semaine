@@ -10,7 +10,7 @@
         <select name="recipe_id" onchange="this.form.submit()">
           <option value="">—</option>
           {% for r in recipes %}
-            <option value="{{ r.id }}" {% if row.selected == r.id %}selected{% endif %}>{{ r.name }}</option>
+            <option value="{{ r.id }}" {% if row.selected == r.id %}selected{% endif %}>{% if r.is_favorite %}★ {% endif %}{{ r.name }}</option>
           {% endfor %}
         </select>
       </form>
@@ -18,10 +18,32 @@
   {% endfor %}
 </div>
 
+{% if pending_conflicts %}
+<div class="card conflict-card">
+  <h2>Des articles déjà cochés reviennent</h2>
+  <p class="hint">Ces ingrédients sont déjà cochés « acheté » dans la liste de courses, et redeviennent nécessaires pour le menu de cette semaine. Faut-il les remettre « à acheter » ?</p>
+  <div class="tagrow">
+    {% for item in pending_conflicts %}<span class="tag">{{ item.name }}</span>{% endfor %}
+  </div>
+  <form method="post" class="conflict-actions">{% csrf_token %}
+    <input type="hidden" name="resolve_returning" value="uncheck">
+    <button type="submit" name="copy_to_courses" value="1">Remettre « à acheter »</button>
+  </form>
+  <form method="post" class="conflict-actions">{% csrf_token %}
+    <input type="hidden" name="resolve_returning" value="keep">
+    <button type="submit" name="copy_to_courses" value="1" class="secondary-btn">Laisser coché</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="card">
   <h2>Ingrédients à acheter cette semaine</h2>
   {% if all_ingredients %}
-    <div class="tagrow">{% for i in all_ingredients %}<span class="tag">{{ i }}</span>{% endfor %}</div>
+    <div class="tagrow">
+      {% for i in all_ingredients %}
+        <span class="tag">{{ i.name }}{% if i.quantity_display %} · {{ i.quantity_display }}{% endif %}</span>
+      {% endfor %}
+    </div>
     <form method="post" style="margin-top:10px;">{% csrf_token %}
       <button type="submit" name="copy_to_courses" value="1">Ajouter à la liste de courses</button>
     </form>
@@ -31,20 +53,42 @@
 </div>
 
 <div class="card">
-  <h2>Recettes enregistrées</h2>
+  <div class="head-row">
+    <h2>Recettes enregistrées</h2>
+    {% if favoris_only %}
+      <a href="{% url 'menu' %}" class="fav-filter-link">Tout afficher</a>
+    {% else %}
+      <a href="?favoris=1" class="fav-filter-link">★ Favoris uniquement</a>
+    {% endif %}
+  </div>
   {% for cat, items in by_cat.items %}
     <div class="courses-cat">
       <h3>{{ cat }}</h3>
       {% for r in items %}
-        <div class="recipe">
+        <div class="recipe {% if r.is_favorite %}favorite{% endif %}">
           {% if r.photo %}<img src="{{ r.photo.url }}">{% else %}<div class="thumb"></div>{% endif %}
           <div style="flex:1;">
-            <div class="rname"><span>{{ r.name }}</span>
+            <div class="rname">
+              <span>
+                <button type="button" class="fav-toggle-btn {% if r.is_favorite %}active{% endif %}"
+                        data-fav-toggle data-id="{{ r.id }}" data-fav="{% if r.is_favorite %}1{% else %}0{% endif %}"
+                        aria-label="Basculer favori pour {{ r.name }}" aria-pressed="{% if r.is_favorite %}true{% else %}false{% endif %}">★</button>
+                {{ r.name }}
+                {% if r.duration_minutes %}<span class="duration-tag">{{ r.duration_minutes }} min</span>{% endif %}
+              </span>
               <form method="post" style="display:inline;" onsubmit="return confirm('Supprimer cette recette ?');">{% csrf_token %}
                 <button type="submit" name="delete_recipe" value="{{ r.id }}" class="delbtn">Supprimer</button>
               </form>
             </div>
-            <div class="tagrow">{% for i in r.ingredients %}<span class="tag">{{ i }}</span>{% endfor %}</div>
+            <div class="tagrow">{% for i in r.ingredients_display %}<span class="tag">{{ i }}</span>{% endfor %}</div>
+            {% if r.steps %}
+              <button type="button" class="steps-toggle" data-detail-toggle aria-label="Étapes de {{ r.name }}" aria-expanded="false">Étapes ▾</button>
+              <div class="task-detail">
+                <ol class="steps-list">
+                  {% for step in r.steps %}<li>{{ step }}</li>{% endfor %}
+                </ol>
+              </div>
+            {% endif %}
           </div>
         </div>
       {% endfor %}
@@ -57,4 +101,38 @@
     <button type="submit" name="add_recipe" value="1">Enregistrer la recette</button>
   </form>
 </div>
+
+<script>
+const CSRF = "{{ csrf_token }}";
+
+document.querySelectorAll('[data-detail-toggle]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const detail = btn.nextElementSibling;
+    if (!detail || !detail.classList.contains('task-detail')) return;
+    const isOpen = detail.classList.toggle('open');
+    btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  });
+});
+
+document.querySelectorAll('[data-fav-toggle]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const wasFav = btn.dataset.fav === '1';
+    const nextFav = !wasFav;
+    btn.dataset.fav = nextFav ? '1' : '0';
+    btn.classList.toggle('active', nextFav);
+    btn.setAttribute('aria-pressed', nextFav ? 'true' : 'false');
+    const fd = new FormData();
+    fd.append('recipe_id', btn.dataset.id);
+    fd.append('is_favorite', nextFav ? '1' : '0');
+    fetch("{% url 'toggle_recipe_favorite' %}", {method:'POST', headers:{'X-CSRFToken':CSRF}, body: fd})
+      .then(r => { if (!r.ok) throw new Error(); })
+      .catch(() => {
+        btn.dataset.fav = wasFav ? '1' : '0';
+        btn.classList.toggle('active', wasFav);
+        btn.setAttribute('aria-pressed', wasFav ? 'true' : 'false');
+        alert("Échec de l'enregistrement, réessayez.");
+      });
+  });
+});
+</script>
 {% endblock %}

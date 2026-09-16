@@ -35,14 +35,37 @@
 
 <div class="card">
   <h2>Liste de courses</h2>
-  <div class="hint">Jour de courses : {{ settings.get_courses_day_display }}.</div>
+  <div class="hint">Jour de courses : {{ settings.get_courses_day_display }}. Les articles « déjà à la maison » restent dans la liste mais sont exclus du « à acheter ».</div>
   {% for cat, items in grouped.items %}
-    <div class="courses-cat">
-      <h3>{{ cat }}</h3>
+    <div class="courses-cat {% if cat == menu_category %}menu-week{% endif %}">
+      <h3>{{ cat }}{% if cat == menu_category %}<span class="src-badge menu">Menu</span>{% endif %}</h3>
       {% for item in items %}
-        <div class="task {% if item.checked %}done{% endif %}">
+        <div class="task grocery-item {% if item.checked %}done{% endif %} {% if item.already_home %}already-home{% endif %}">
           <input type="checkbox" id="course-{{ item.id }}" class="course-toggle" data-id="{{ item.id }}" {% if item.checked %}checked{% endif %}>
-          <label for="course-{{ item.id }}">{{ item.name }}</label>
+          <label for="course-{{ item.id }}">
+            {{ item.name }}
+            {% if item.quantity_display %}<span class="qty-tag">{{ item.quantity_display }}</span>{% endif %}
+            {% if item.is_default %}<span class="src-badge default">Habituel</span>{% endif %}
+            <span class="src-badge home" id="home-badge-{{ item.id }}" {% if not item.already_home %}hidden{% endif %}>Déjà à la maison</span>
+          </label>
+          <button type="button" class="row-detail-toggle" data-detail-toggle aria-label="Modifier {{ item.name }}" aria-expanded="false">⋯</button>
+          <div class="task-detail">
+            <button type="button" class="home-toggle-btn" data-home-toggle data-id="{{ item.id }}" data-home="{% if item.already_home %}1{% else %}0{% endif %}">
+              {% if item.already_home %}Retirer « déjà à la maison »{% else %}Marquer « déjà à la maison »{% endif %}
+            </button>
+            <form method="post" action="{% url 'edit_grocery' %}" class="edit-grocery-form">{% csrf_token %}
+              <input type="hidden" name="item_id" value="{{ item.id }}">
+              <input type="text" name="name" value="{{ item.name }}" placeholder="Nom" required>
+              <input type="text" name="category" value="{{ item.category }}" placeholder="Catégorie">
+              <input type="text" name="quantity" value="{{ item.quantity|default_if_none:'' }}" placeholder="Quantité" inputmode="decimal">
+              <input type="text" name="unit" value="{{ item.unit }}" placeholder="Unité">
+              <button type="submit">Enregistrer</button>
+            </form>
+            <form method="post" action="{% url 'delete_grocery' %}" onsubmit="return confirm('Supprimer cet article ?');">{% csrf_token %}
+              <input type="hidden" name="item_id" value="{{ item.id }}">
+              <button type="submit" class="delbtn">Supprimer l'article</button>
+            </form>
+          </div>
         </div>
       {% endfor %}
     </div>
@@ -72,6 +95,36 @@ document.querySelectorAll('.course-toggle').forEach(cb=>{
         cb.closest('.task').classList.toggle('done', cb.checked);
         alert("Échec de l'enregistrement, réessayez.");
       });
+  });
+});
+
+document.querySelectorAll('[data-detail-toggle]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const detail = btn.closest('.task').querySelector('.task-detail');
+    if (!detail) return;
+    const isOpen = detail.classList.toggle('open');
+    btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  });
+});
+
+document.querySelectorAll('[data-home-toggle]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const row = btn.closest('.task');
+    const wasHome = btn.dataset.home === '1';
+    const nextHome = !wasHome;
+    const fd = new FormData();
+    fd.append('item_id', btn.dataset.id);
+    fd.append('already_home', nextHome ? '1' : '0');
+    fetch("{% url 'toggle_grocery_home' %}", {method:'POST', headers:{'X-CSRFToken':CSRF}, body: fd})
+      .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(() => {
+        btn.dataset.home = nextHome ? '1' : '0';
+        btn.textContent = nextHome ? "Retirer « déjà à la maison »" : "Marquer « déjà à la maison »";
+        row.classList.toggle('already-home', nextHome);
+        const badge = document.getElementById('home-badge-' + btn.dataset.id);
+        if (badge) badge.hidden = !nextHome;
+      })
+      .catch(() => alert("Échec de l'enregistrement, réessayez."));
   });
 });
 </script>
