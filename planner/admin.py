@@ -21,10 +21,20 @@ admin.site.register(FamilyMembership)
 admin.site.register(FamilySettings)
 admin.site.register(Activity)
 admin.site.register(TaskCompletion)
-admin.site.register(Recipe)
+class RecipeAdmin(admin.ModelAdmin):
+    list_display = ('name', 'category', 'is_favorite', 'duration_minutes', 'family')
+    list_filter = ('category', 'is_favorite', 'family')
+
+
+class GroceryItemAdmin(admin.ModelAdmin):
+    list_display = ('name', 'category', 'checked', 'already_home', 'is_default', 'family')
+    list_filter = ('category', 'checked', 'already_home', 'is_default', 'family')
+
+
+admin.site.register(Recipe, RecipeAdmin)
 admin.site.register(WeeklyMenuEntry)
 admin.site.register(CustomTask)
-admin.site.register(GroceryItem)
+admin.site.register(GroceryItem, GroceryItemAdmin)
 admin.site.register(TaskOrder)
 admin.site.register(StarAward)
 admin.site.register(KidStars)
