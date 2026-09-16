@@ -362,6 +362,7 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
   border:2.5px solid var(--navy);box-shadow:var(--shadow-sm);}
 .flash.success{background:#d6f7ef;color:var(--mint-dk);}
 .flash.error{background:#ffe1e6;color:var(--coral-dk);}
+.flash.info{background:#f1eeff;color:var(--plum-dk);}
 
 @media(max-width:640px){
   input,select,textarea{font-size:16px !important;}

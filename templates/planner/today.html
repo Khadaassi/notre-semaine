@@ -1,5 +1,9 @@
 {% extends "planner/base.html" %}
 {% block content %}
+{% if kid_unassigned %}
+<div class="flash info">Ce compte n'est pas encore associé à un enfant précis — les tâches sont visibles mais pas
+  modifiables. Demande à un parent de faire l'association depuis Réglages → Membres de la famille.</div>
+{% endif %}
 <div class="today-toolbar">
   <div class="hint" style="margin:0;">{{ real_date|date:"l j F Y"|capfirst }}</div>
   <button type="button" id="reorderToggle" class="reorder-toggle-btn" aria-pressed="false">

@@ -75,6 +75,18 @@ def parent_required(view_func):
     return wrapper
 
 
+def _can_act_on(request, person):
+    """True if the signed-in account may check off / time / reorder a task belonging to
+    `person`. A parent may act on anyone. An 'enfants' account may act only on the one kid
+    a parent has assigned it to via FamilyMembership.kid_person — never a sibling's tasks,
+    and never before it's been assigned (see views.today for the matching read-only fallback
+    on the page itself, and settings_view for how a parent assigns it)."""
+    membership = request.user.familymembership
+    if membership.role in PARENT_ROLES:
+        return True
+    return bool(membership.kid_person) and person == membership.kid_person
+
+
 def _monday_of(d):
     return d - datetime.timedelta(days=d.weekday())
 
@@ -129,15 +141,27 @@ def today(request):
     holiday_today = is_zone_b_holiday(real_date)
     holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
 
-    people = _family_people(settings)
-    is_parent = _is_parent(request)
+    membership = request.user.familymembership
+    is_parent = membership.role in PARENT_ROLES
+    # An 'enfants' account only ever gets to see/act on the one kid_person a parent has
+    # assigned it to (FamilyMembership.kid_person) — never a sibling's tasks, and never a
+    # parent's. Until it's assigned, it falls back to read-only access to every kid's card
+    # (see checkable_by_viewer below) rather than an empty or broken page — a parent assigns
+    # it from the member list in Réglages (settings_view / set_member_kid).
+    if is_parent:
+        view_people = _family_people(settings)
+    elif membership.kid_person:
+        view_people = [membership.kid_person]
+    else:
+        view_people = _kids_people(settings)
+
     orders = {}
     for o in TaskOrder.objects.filter(family=family):
         orders.setdefault(o.person, {})[o.task_id] = o.order
     levels = {s.person: _level_for(s.total) for s in KidStars.objects.filter(family=family)}
 
     cards = []
-    for person in people:
+    for person in view_people:
         task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow, custom_tasks)
         disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
         task_list = split_by_exceptions(task_list, disabled_ids, not_applicable_ids)
@@ -167,7 +191,7 @@ def today(request):
             'person': person,
             'name': _person_label(person, settings),
             'phase_cards': phase_cards,
-            'checkable_by_viewer': is_parent or person in ('fille', 'fils'),
+            'checkable_by_viewer': is_parent or person == membership.kid_person,
             'level': levels.get(person, 1) if person in ('fille', 'fils') else None,
         })
 
@@ -181,6 +205,7 @@ def today(request):
     return render(request, 'planner/today.html', {
         'kid_cards': kid_cards, 'parent_cards': parent_cards, 'day': day, 'day_chips': day_chips,
         'real_date': real_date, 'settings': settings,
+        'kid_unassigned': not is_parent and not membership.kid_person,
     })
 
 
@@ -241,7 +266,7 @@ def _award_star_if_day_complete(family, person, day, real_date):
 def toggle_task(request):
     family = _get_family(request)
     person = request.POST['person']
-    if not _is_parent(request) and person not in ('fille', 'fils'):
+    if not _can_act_on(request, person):
         raise PermissionDenied
     task_id = request.POST['task_id']
     day = request.POST['day']
@@ -261,7 +286,7 @@ def toggle_task(request):
 def timer_task(request):
     family = _get_family(request)
     person = request.POST['person']
-    if not _is_parent(request) and person not in ('fille', 'fils'):
+    if not _can_act_on(request, person):
         raise PermissionDenied
     task_id = request.POST['task_id']
     day = request.POST['day']
@@ -292,7 +317,7 @@ def timer_task(request):
 def reorder_tasks(request):
     family = _get_family(request)
     person = request.POST.get('person')
-    if not _is_parent(request) and person not in ('fille', 'fils'):
+    if not _can_act_on(request, person):
         raise PermissionDenied
     task_ids = [tid for tid in request.POST.getlist('task_ids[]') if tid]
     for idx, task_id in enumerate(task_ids):
