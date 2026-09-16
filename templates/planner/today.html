@@ -17,6 +17,12 @@
   {% endfor %}
 </div>
 {% endif %}
+{% if settings.week_note %}
+<div class="weeknote">
+  <div class="weeknote-label">Note de la semaine</div>
+  <div class="weeknote-text">{{ settings.week_note|linebreaksbr }}</div>
+</div>
+{% endif %}
 <div class="dayrow">
   {% for c in day_chips %}
     <a class="daychip {% if c.is_selected %}active{% endif %}" href="?day={{ c.key }}{% if who %}&who={{ who }}{% endif %}">

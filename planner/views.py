@@ -25,7 +25,7 @@ from .models import (
 )
 from .task_logic import (
     DAYS, DAY_FULL, tasks_for, next_day, pillar_for, is_zone_b_holiday, DEEP_CLEAN_ROOMS,
-    group_by_phase, apply_order, parse_free_time, split_by_exceptions,
+    group_by_phase, apply_order, parse_free_time, split_by_exceptions, find_schedule_conflicts,
 )
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
 
@@ -497,6 +497,20 @@ MENAGE_SHORT_LABELS = {
 }
 
 
+def _week_start_from_request(request):
+    """Resolves the Monday to display from ?week=YYYY-MM-DD (either param may be absent or
+    invalid, in which case today's week is used — this keeps week_view's default behavior
+    unchanged when no navigation has happened yet)."""
+    today_monday = _monday_of(datetime.date.today())
+    week_param = request.GET.get('week')
+    if week_param:
+        try:
+            return _monday_of(datetime.date.fromisoformat(week_param))
+        except ValueError:
+            pass
+    return today_monday
+
+
 @login_required
 def week_view(request):
     family = _get_family(request)
@@ -505,7 +519,8 @@ def week_view(request):
     activities = list(Activity.objects.filter(family=family))
     people = _family_people(settings)
 
-    week_start = _monday_of(datetime.date.today())
+    week_start = _week_start_from_request(request)
+    today_monday = _monday_of(datetime.date.today())
     menu_by_day = {e.day: e.recipe for e in
                    WeeklyMenuEntry.objects.filter(family=family, week_start=week_start).select_related('recipe')}
 
@@ -528,9 +543,26 @@ def week_view(request):
                 by_label.setdefault(short, []).append(_person_label(p, settings))
         menage_cells.append([f"{' & '.join(names)} : {label}" for label, names in by_label.items()])
 
+        # An Activity with `specific_date` set is a one-off occurrence, shown only on the
+        # exact date it falls on (never recurring); one without it shows every week on its
+        # regular `day` — see Activity.specific_date and task_logic.find_schedule_conflicts.
+        day_activities = [
+            a for a in activities if a.person in people and (
+                (a.specific_date and a.specific_date == real_date) or
+                (not a.specific_date and a.day == d)
+            )
+        ]
+        conflicting_ids = find_schedule_conflicts(day_activities)
         activites_cells.append([
-            f"{_person_label(a.person, settings)} : {a.label}" + (f" ({a.time_range_label()})" if a.time_range_label() else '')
-            for a in activities if a.day == d and a.person in people
+            {
+                'text': (
+                    f"{_person_label(a.person, settings)} : {a.label}"
+                    + (f" ({a.time_range_label()})" if a.time_range_label() else '')
+                    + (' · ponctuel' if a.specific_date else '')
+                ),
+                'overlap': a.id in conflicting_ids,
+            }
+            for a in day_activities
         ])
 
         recipe = menu_by_day.get(d)
@@ -548,7 +580,52 @@ def week_view(request):
 
     return render(request, 'planner/week.html', {
         'day_headers': day_headers, 'table_rows': table_rows, 'rotation_note': rotation_note,
+        'week_start': week_start, 'week_end': week_start + datetime.timedelta(days=6),
+        'prev_week': week_start - datetime.timedelta(days=7),
+        'next_week': week_start + datetime.timedelta(days=7),
+        'is_current_week': week_start == today_monday, 'current_week': today_monday,
+        'week_note': settings.week_note,
     })
+
+
+@login_required
+@require_POST
+def duplicate_week(request):
+    """Copies the displayed week's WeeklyMenuEntry rows (the day → recipe menu plan) onto
+    the following week. Scope, decided here: only WeeklyMenuEntry is duplicated — recurring
+    Activity rows (plain `day`, no `specific_date`) already repeat every week on their own,
+    and one-off `specific_date` Activity rows are deliberately NOT carried over, since
+    "duplicate" for a dated one-off event is ambiguous (should the date shift by 7 days? is
+    it still relevant?) and better left to an explicit per-activity action later. A day
+    that already has a menu entry in the target week is left untouched, so duplicating never
+    silently overwrites a menu someone already planned."""
+    family = _get_family(request)
+    week_param = request.POST.get('week')
+    try:
+        source_week = _monday_of(datetime.date.fromisoformat(week_param))
+    except (TypeError, ValueError):
+        source_week = _monday_of(datetime.date.today())
+    target_week = source_week + datetime.timedelta(days=7)
+
+    already_planned_days = set(WeeklyMenuEntry.objects.filter(
+        family=family, week_start=target_week
+    ).values_list('day', flat=True))
+
+    copied = 0
+    for entry in WeeklyMenuEntry.objects.filter(family=family, week_start=source_week):
+        if entry.day in already_planned_days or not entry.recipe_id:
+            continue
+        WeeklyMenuEntry.objects.create(
+            family=family, week_start=target_week, day=entry.day, recipe_id=entry.recipe_id
+        )
+        copied += 1
+
+    if copied:
+        messages.success(request, f"Menu dupliqué vers la semaine suivante ({copied} jour(s) copié(s)).")
+    else:
+        messages.info(request, "Rien à dupliquer : la semaine suivante a déjà un menu pour ces jours, "
+                                "ou la semaine affichée n'a pas de menu.")
+    return redirect(f"{reverse('week')}?week={target_week.isoformat()}")
 
 
 @login_required

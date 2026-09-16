@@ -144,6 +144,7 @@ nav.tabs a .nav-icon{margin-right:6px;}
 .icon-etoile{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23000' stroke='none'%3E%3Cpath d='M12 2.5l2.9 6 6.6.7-4.9 4.6 1.3 6.5L12 16.9 6.1 20.3l1.3-6.5-4.9-4.6 6.6-.7z'/%3E%3C/svg%3E");}
 .icon-reorder{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 20V8'/%3E%3Cpath d='M5 11l3-3 3 3'/%3E%3Cpath d='M16 4v12'/%3E%3Cpath d='M19 13l-3 3-3-3'/%3E%3C/svg%3E");}
 .icon-motion{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 12h4l3 8 4-16 3 8h6'/%3E%3C/svg%3E");}
+.icon-alerte{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.3 3.9L2.7 18a2 2 0 0 0 1.8 3h15a2 2 0 0 0 1.8-3L13.7 3.9a2 2 0 0 0-3.4 0z'/%3E%3Cline x1='12' y1='9' x2='12' y2='13'/%3E%3Cline x1='12' y1='17' x2='12.01' y2='17'/%3E%3C/svg%3E");}
 [class*="icon-"]{-webkit-mask-image:var(--i);mask-image:var(--i);}
 
 .celebrate-overlay{position:fixed;inset:0;z-index:999;display:flex;align-items:center;justify-content:center;
@@ -320,6 +321,41 @@ summary.head::-webkit-details-marker{display:none;}
 .weekgrid tr:last-child td{border-bottom:none;}
 .weekgrid tr:nth-child(even) td{background:#fbf8ff;}
 .weekgrid .slot{font-weight:800;color:var(--plum);white-space:nowrap;display:flex;align-items:center;}
+
+/* ---- Navigation semaine précédente/suivante (Organisation) ---- */
+.week-nav{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;}
+.week-nav-btn{flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;
+  border-radius:12px;background:white;color:var(--navy);border:2.5px solid var(--navy);font-weight:800;font-size:16px;
+  text-decoration:none;box-shadow:2px 2px 0 var(--navy);transition:transform .08s ease,box-shadow .08s ease,background .1s ease;}
+.week-nav-btn:hover{background:#fff6ea;transform:translate(1px,1px);box-shadow:1px 1px 0 var(--navy);}
+.week-nav-label{flex:1;text-align:center;min-width:0;}
+.week-nav-label h2{margin:0;}
+.week-nav-today{display:inline-block;margin-top:2px;font-size:12px;font-weight:800;color:var(--plum);text-decoration:underline;}
+
+.week-duplicate-form{margin-bottom:16px;}
+.duplicate-btn{background:var(--mint-dk);font-size:12.5px;padding:9px 16px;}
+
+.weeknote{background:#fff6ea;border-radius:16px;padding:14px 16px;margin-bottom:16px;
+  border:2.5px solid var(--navy);box-shadow:var(--shadow-sm);}
+.weeknote-label{font-size:11.5px;font-weight:800;color:var(--plum);text-transform:uppercase;
+  letter-spacing:.03em;margin-bottom:4px;}
+.weeknote-text{font-size:13.5px;font-weight:700;color:var(--navy);}
+
+.activity-item{padding:1px 0;}
+.activity-item.activity-overlap{display:flex;align-items:flex-start;gap:5px;color:var(--coral-dk);
+  background:#ffe1e6;border-left:3px solid var(--coral);border-radius:6px;padding:3px 7px;margin:2px 0;}
+.activity-item.activity-overlap .row-icon{margin-right:0;margin-top:2px;flex-shrink:0;}
+
+/* ---- Agenda vertical (mobile) : même contenu que le tableau, présenté jour par jour ---- */
+.week-agenda{display:none;}
+.agenda-day{border:2.5px solid var(--navy);border-radius:16px;padding:12px 14px;margin-bottom:12px;background:white;
+  box-shadow:var(--shadow-sm);}
+.agenda-day:last-child{margin-bottom:0;}
+.agenda-day-title{font-size:14px;margin:0 0 8px;color:var(--navy);text-transform:uppercase;letter-spacing:.03em;}
+.agenda-row{display:flex;gap:10px;padding:7px 0;border-bottom:2px dashed var(--line);font-size:13.5px;font-weight:700;}
+.agenda-row:last-child{border-bottom:none;}
+.agenda-row-slot{flex-shrink:0;width:88px;font-weight:800;color:var(--plum);display:flex;align-items:center;}
+.agenda-row-content{flex:1;min-width:0;line-height:1.5;}
 .rotation{display:flex;align-items:center;justify-content:space-between;background:#fff6ea;
   border-radius:16px;padding:14px 16px;margin-bottom:12px;border:2.5px solid var(--navy);box-shadow:var(--shadow-sm);}
 .rotation .who{font-family:var(--font-display);font-weight:700;color:var(--navy);font-size:15px;}
@@ -459,4 +495,10 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
   nav.tabs a .nav-icon{margin-right:0;}
   nav.tabs a .nav-label{display:block;font-size:9.5px;white-space:nowrap;overflow:hidden;
     text-overflow:ellipsis;max-width:100%;margin-left:0;}
+
+  /* Semainier : agenda vertical par jour plutôt que le tableau horizontal (illisible en
+     dessous de ~640px) — même contexte de template, juste une seconde présentation. */
+  .week-desktop{display:none;}
+  .week-agenda{display:block;}
+  .week-nav-label h2{font-size:15px;}
 }
