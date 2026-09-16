@@ -1,18 +1,59 @@
 {% extends "planner/base.html" %}
 {% block content %}
+{% if kid_unassigned %}
+<div class="flash info">Ce compte n'est pas encore associé à un enfant précis — les tâches sont visibles mais pas
+  modifiables. Demande à un parent de faire l'association depuis Réglages → Membres de la famille.</div>
+{% endif %}
 <div class="today-toolbar">
   <div class="hint" style="margin:0;">{{ real_date|date:"l j F Y"|capfirst }}</div>
   <button type="button" id="reorderToggle" class="reorder-toggle-btn" aria-pressed="false">
     <span class="row-icon icon-reorder"></span><span class="toggle-label">Modifier l'ordre</span>
   </button>
 </div>
+{% if who_options %}
+<div class="whorow">
+  {% for o in who_options %}
+    <a class="whochip {% if o.selected %}active{% endif %}" href="?day={{ day }}&who={{ o.key }}">{{ o.label }}</a>
+  {% endfor %}
+</div>
+{% endif %}
 <div class="dayrow">
   {% for c in day_chips %}
-    <a class="daychip {% if c.is_selected %}active{% endif %}" href="?day={{ c.key }}">
+    <a class="daychip {% if c.is_selected %}active{% endif %}" href="?day={{ c.key }}{% if who %}&who={{ who }}{% endif %}">
       <span class="d">{{ c.label|slice:":3" }}</span>{{ c.full }}
     </a>
   {% endfor %}
 </div>
+
+{% if upcoming_activity or tomorrow_prep or tonight_recipe %}
+<div class="home-highlights">
+  {% if upcoming_activity %}
+  <div class="highlight-card upcoming">
+    <h3><span class="row-icon icon-clock"></span>À venir</h3>
+    <div class="hl-main">{{ upcoming_activity.person_name }} — {{ upcoming_activity.label }}</div>
+    {% if upcoming_activity.time_range %}<div class="hl-sub">{{ upcoming_activity.time_range }}</div>{% endif %}
+    {% if upcoming_activity.accompanied_by_name %}<div class="hl-sub">Accompagné(e) par {{ upcoming_activity.accompanied_by_name }}</div>{% endif %}
+    {% if upcoming_activity.picked_up_by_name %}<div class="hl-sub">Récupéré(e) par {{ upcoming_activity.picked_up_by_name }}</div>{% endif %}
+    {% if upcoming_activity.location %}<div class="hl-sub">Lieu : {{ upcoming_activity.location }}</div>{% endif %}
+    {% if upcoming_activity.items_to_bring %}<div class="hl-sub">À apporter : {{ upcoming_activity.items_to_bring }}</div>{% endif %}
+  </div>
+  {% endif %}
+  {% if tomorrow_prep %}
+  <div class="highlight-card prep">
+    <h3><span class="row-icon icon-soir"></span>À préparer pour demain</h3>
+    {% for item in tomorrow_prep %}
+      <div class="hl-row {% if item.done %}done{% endif %}">{{ item.name }} — {{ item.label }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if tonight_recipe %}
+  <div class="highlight-card repas">
+    <h3><span class="row-icon icon-repas"></span>Repas du soir</h3>
+    <a href="{% url 'menu' %}" class="hl-main hl-link">{{ tonight_recipe.name }}</a>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
 
 <div class="kidgrid">
   {% include "planner/_person_cards.html" with cards=kid_cards %}

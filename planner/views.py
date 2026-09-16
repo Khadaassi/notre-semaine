@@ -80,6 +80,18 @@ def parent_required(view_func):
     return wrapper
 
 
+def _can_act_on(request, person):
+    """True if the signed-in account may check off / time / reorder a task belonging to
+    `person`. A parent may act on anyone. An 'enfants' account may act only on the one kid
+    a parent has assigned it to via FamilyMembership.kid_person — never a sibling's tasks,
+    and never before it's been assigned (see views.today for the matching read-only fallback
+    on the page itself, and settings_view for how a parent assigns it)."""
+    membership = request.user.familymembership
+    if membership.role in PARENT_ROLES:
+        return True
+    return bool(membership.kid_person) and person == membership.kid_person
+
+
 def _monday_of(d):
     return d - datetime.timedelta(days=d.weekday())
 
@@ -87,6 +99,20 @@ def _monday_of(d):
 def _real_date_for_day(day):
     today_idx = datetime.date.today().weekday()
     return datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
+
+
+def _current_phase_now(now_time):
+    """Maps a wall-clock time to one of the 3 accordion phases used on 'Aujourd'hui'
+    (see group_by_phase in task_logic.py): before 12h00 = matin, 12h00–18h00 = journée,
+    18h00 onward = soir. A simple, deliberately time-of-day-only split — it has no relation
+    to any one family member's actual school/work hours (which vary by day and person, see
+    task_logic.is_bureau_day etc.) and isn't meant to be precise, just a reasonable default
+    for which accordion panel opens automatically."""
+    if now_time < datetime.time(12, 0):
+        return 'matin'
+    if now_time < datetime.time(18, 0):
+        return 'journee'
+    return 'soir'
 
 
 def _ensure_seed_data(family):
@@ -109,9 +135,12 @@ def _person_label(person, settings):
     }[person]
 
 
+def _kids_people(settings):
+    return ['fille'] if settings.nb_enfants == 1 else ['fille', 'fils']
+
+
 def _family_people(settings):
-    kids = ['fille'] if settings.nb_enfants == 1 else ['fille', 'fils']
-    return kids + ['maman', 'papa']
+    return _kids_people(settings) + ['maman', 'papa']
 
 
 @login_required
@@ -131,15 +160,94 @@ def today(request):
     holiday_today = is_zone_b_holiday(real_date)
     holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
 
-    people = _family_people(settings)
-    is_parent = _is_parent(request)
+    # Only today's date has a meaningful "current period" — on any other day chip every
+    # phase card just opens expanded (see 'open_default' below).
+    is_today_view = day == DAYS[today_idx]
+    now = datetime.datetime.now()
+    current_phase = _current_phase_now(now.time())
+
+    # Direct access to the evening meal — unlike "À venir"/"À préparer pour demain" this isn't
+    # relative to right now, so it's shown for whichever day chip is selected, not just today.
+    week_start = _monday_of(datetime.date.today())
+    menu_entry = WeeklyMenuEntry.objects.filter(
+        family=family, week_start=week_start, day=day
+    ).select_related('recipe').first()
+    tonight_recipe = menu_entry.recipe if menu_entry else None
+
+    membership = request.user.familymembership
+    is_parent = membership.role in PARENT_ROLES
+    # An 'enfants' account only ever gets to see/act on the one kid_person a parent has
+    # assigned it to (FamilyMembership.kid_person) — never a sibling's tasks, and never a
+    # parent's. Until it's assigned, it falls back to read-only access to every kid's card
+    # (see checkable_by_viewer below) rather than an empty or broken page — a parent assigns
+    # it from the member list in Réglages (settings_view / set_member_kid).
+    kids_people = _kids_people(settings)
+    if is_parent:
+        view_people = _family_people(settings)
+    elif membership.kid_person:
+        view_people = [membership.kid_person]
+    else:
+        view_people = kids_people
+
+    # "Toute la famille / Moi / chaque enfant" selector (?who=), parent-only: an 'enfants'
+    # account already only ever sees the single card view_people resolved to above, so there's
+    # nothing left for it to filter — the selector isn't offered to it (who_options stays None,
+    # see today.html). "Moi" maps to the viewer's own person: their role for a parent
+    # (role is literally 'maman'/'papa', the same string as the person key).
+    who_options, who = None, None
+    if is_parent:
+        who = request.GET.get('who', 'all')
+        valid_who = {'all', 'me'} | set(kids_people)
+        if who not in valid_who:
+            who = 'all'
+        if who == 'me':
+            view_people = [membership.role]
+        elif who != 'all':
+            view_people = [who]
+        who_options = [
+            {'key': 'all', 'label': 'Toute la famille', 'selected': who == 'all'},
+            {'key': 'me', 'label': 'Moi', 'selected': who == 'me'},
+        ] + [
+            {'key': kid, 'label': _person_label(kid, settings), 'selected': who == kid}
+            for kid in kids_people
+        ]
+
+    # "À venir" — the next not-yet-started Activity today, scoped to the same people the
+    # who-filter above resolved to (so a kid account only ever sees its own upcoming activity,
+    # and a parent's "Moi"/per-kid filter narrows this too). Only meaningful when viewing
+    # today: a future/past day chip has no "next" relative to right now.
+    upcoming_activity = None
+    if is_today_view:
+        candidates = sorted(
+            (a for a in activities
+             if a.day == day and a.person in view_people and a.start_time and a.start_time >= now.time()),
+            key=lambda a: a.start_time,
+        )
+        if candidates:
+            act = candidates[0]
+            upcoming_activity = {
+                'person_name': _person_label(act.person, settings),
+                'label': act.label,
+                'time_range': act.time_range_label(),
+                'accompanied_by_name': _person_label(act.accompanied_by, settings) if act.accompanied_by else '',
+                'picked_up_by_name': _person_label(act.picked_up_by, settings) if act.picked_up_by else '',
+                'location': act.location,
+                'items_to_bring': act.items_to_bring,
+            }
+
     orders = {}
     for o in TaskOrder.objects.filter(family=family):
         orders.setdefault(o.person, {})[o.task_id] = o.order
     levels = {s.person: _level_for(s.total, settings.star_milestone) for s in KidStars.objects.filter(family=family)}
 
+    # "À préparer pour demain" — any task whose id contains 'demain' (currently sac_demain,
+    # lunchbox_demain in task_logic.py; found by substring rather than hardcoded so a future
+    # '..._demain' task picks itself up automatically) for whoever's visible. Read-only summary
+    # here — the real checkbox stays in the person's own phase card below.
+    tomorrow_prep = []
+
     cards = []
-    for person in people:
+    for person in view_people:
         task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow, custom_tasks)
         disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
         task_list = split_by_exceptions(task_list, disabled_ids, not_applicable_ids)
@@ -153,6 +261,12 @@ def today(request):
             x['seconds_spent'] = tc.seconds_spent if tc else 0
             x['timer_running'] = bool(tc and tc.timer_started_at)
             x['timer_started_ms'] = int(tc.timer_started_at.timestamp() * 1000) if (tc and tc.timer_started_at) else None
+        if is_today_view:
+            for x in task_list:
+                if 'demain' in x['id']:
+                    tomorrow_prep.append({
+                        'name': _person_label(person, settings), 'label': x['label'], 'done': x['done'],
+                    })
         phases = [(pk, pl, apply_order(ts, orders.get(person, {}))) for pk, pl, ts in group_by_phase(task_list)]
         phase_cards = []
         for phase_key, phase_label, tasks in phases:
@@ -164,12 +278,13 @@ def today(request):
                 'tasks': tasks,
                 'pct': round(done_count / len(checkable) * 100) if checkable else 0,
                 'remaining': len(checkable) - done_count,
+                'open_default': (not is_today_view) or (phase_key == current_phase),
             })
         cards.append({
             'person': person,
             'name': _person_label(person, settings),
             'phase_cards': phase_cards,
-            'checkable_by_viewer': is_parent or person in ('fille', 'fils'),
+            'checkable_by_viewer': is_parent or person == membership.kid_person,
             'level': levels.get(person, 1) if person in ('fille', 'fils') else None,
         })
 
@@ -183,6 +298,10 @@ def today(request):
     return render(request, 'planner/today.html', {
         'kid_cards': kid_cards, 'parent_cards': parent_cards, 'day': day, 'day_chips': day_chips,
         'real_date': real_date, 'settings': settings,
+        'kid_unassigned': not is_parent and not membership.kid_person,
+        'who_options': who_options, 'who': who,
+        'upcoming_activity': upcoming_activity, 'tomorrow_prep': tomorrow_prep,
+        'tonight_recipe': tonight_recipe,
     })
 
 
@@ -250,7 +369,7 @@ def _award_star_if_day_complete(family, person, day, real_date):
 def toggle_task(request):
     family = _get_family(request)
     person = request.POST['person']
-    if not _is_parent(request) and person not in ('fille', 'fils'):
+    if not _can_act_on(request, person):
         raise PermissionDenied
     task_id = request.POST['task_id']
     day = request.POST['day']
@@ -273,7 +392,7 @@ def toggle_task(request):
 def timer_task(request):
     family = _get_family(request)
     person = request.POST['person']
-    if not _is_parent(request) and person not in ('fille', 'fils'):
+    if not _can_act_on(request, person):
         raise PermissionDenied
     task_id = request.POST['task_id']
     day = request.POST['day']
@@ -304,7 +423,7 @@ def timer_task(request):
 def reorder_tasks(request):
     family = _get_family(request)
     person = request.POST.get('person')
-    if not _is_parent(request) and person not in ('fille', 'fils'):
+    if not _can_act_on(request, person):
         raise PermissionDenied
     task_ids = [tid for tid in request.POST.getlist('task_ids[]') if tid]
     for idx, task_id in enumerate(task_ids):
@@ -735,6 +854,30 @@ def promote_member(request, pk):
         messages.success(request, "Membre promu au rôle parent.")
     else:
         messages.error(request, "Action impossible.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+@require_POST
+def set_member_kid(request, pk):
+    """A parent assigns (or clears) which kid a shared 'enfants' account represents — see
+    FamilyMembership.kid_person. This is the only way that field gets set; there's no
+    self-service option since a kid account shouldn't be able to grant itself another kid's
+    tasks. Only affects members with role='enfants' — a no-op (silently ignored, same as
+    promote_member on a bad pk) on anyone else."""
+    family = _get_family(request)
+    settings = FamilySettings.load(family)
+    kid_person = request.POST.get('kid_person', '')
+    membership = FamilyMembership.objects.filter(pk=pk, family=family, role='enfants').first()
+    if not membership:
+        messages.error(request, "Action impossible.")
+    elif kid_person and kid_person not in _kids_people(settings):
+        messages.error(request, "Enfant invalide.")
+    else:
+        membership.kid_person = kid_person
+        membership.save(update_fields=['kid_person'])
+        messages.success(request, "Compte associé à un enfant." if kid_person else "Association retirée.")
     return redirect('settings')
 
 

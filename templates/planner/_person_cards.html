@@ -4,14 +4,15 @@
     {% if card.level %}<span class="level-badge"><span class="lvl-star icon-etoile"></span>Niv. {{ card.level }}</span>{% endif %}
   </h2>
   {% for pc in card.phase_cards %}
-  <div class="kidcard {{ card.person }} {% if pc.remaining == 0 %}phase-complete{% endif %}" data-person="{{ card.person }}" data-phase="{{ pc.phase_key }}">
-    <div class="head">
+  <details class="kidcard {{ card.person }} {% if pc.remaining == 0 %}phase-complete{% endif %}" data-person="{{ card.person }}" data-phase="{{ pc.phase_key }}" {% if pc.open_default %}open{% endif %}>
+    <summary class="head">
       <span><span class="phase-icon icon-{{ pc.phase_key }}"></span>{{ pc.phase_label }}</span>
       <span class="head-status">
         <span class="remaining-badge {% if pc.remaining == 0 %}done{% endif %}">{% if pc.remaining == 0 %}Terminé{% else %}{{ pc.remaining }} restante{{ pc.remaining|pluralize }}{% endif %}</span>
         <span class="pct-badge">{{ pc.pct }}%</span>
+        <span class="disclosure-caret" aria-hidden="true">▾</span>
       </span>
-    </div>
+    </summary>
     <div class="progressbar"><div style="width:{{ pc.pct }}%"></div></div>
     <div class="phase-block">
       {% for task in pc.tasks %}
@@ -53,7 +54,7 @@
         {% endif %}
       {% endfor %}
     </div>
-  </div>
+  </details>
   {% endfor %}
 </div>
 {% endfor %}

@@ -69,22 +69,39 @@ nav.tabs a .nav-icon{margin-right:6px;}
   border:2.5px solid var(--navy);margin-bottom:20px;}
 .card h2{font-size:18px;margin:0 0 4px;color:var(--navy);}
 .hint{font-size:12.5px;color:var(--muted);margin-bottom:12px;font-weight:700;}
-.dayrow{display:flex;gap:8px;overflow-x:auto;margin-bottom:18px;padding:2px;}
-.daychip{flex:1;min-width:64px;text-align:center;padding:10px 4px;border-radius:14px;border:2.5px solid var(--navy);
+.dayrow,.whorow{display:flex;gap:8px;overflow-x:auto;margin-bottom:18px;padding:2px;}
+.daychip,.whochip{flex:1;min-width:64px;text-align:center;padding:10px 4px;border-radius:14px;border:2.5px solid var(--navy);
   cursor:pointer;font-weight:700;font-size:13px;color:var(--navy);background:white;text-decoration:none;display:block;
   box-shadow:2px 2px 0 var(--navy);transition:transform .08s ease,box-shadow .08s ease,background .1s ease;}
-.daychip:hover{background:#fff6ea;transform:translate(1px,1px);box-shadow:1px 1px 0 var(--navy);}
+.daychip:hover,.whochip:hover{background:#fff6ea;transform:translate(1px,1px);box-shadow:1px 1px 0 var(--navy);}
 .daychip .d{display:block;font-size:10.5px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;}
-.daychip.active{background:var(--coral);color:white;box-shadow:var(--shadow-sm),0 0 0 3px rgba(255,93,115,.3);
+.daychip.active,.whochip.active{background:var(--coral);color:white;box-shadow:var(--shadow-sm),0 0 0 3px rgba(255,93,115,.3);
   animation:hud-glow-pulse 2.4s ease-in-out infinite;}
 @keyframes hud-glow-pulse{
   0%,100%{filter:brightness(1);}
   50%{filter:brightness(1.08);}
 }
-.daychip.active:hover{transform:none;box-shadow:var(--shadow-sm);}
+.daychip.active:hover,.whochip.active:hover{transform:none;box-shadow:var(--shadow-sm);}
 .daychip.active .d{color:#ffe1e6;}
+.whochip{min-width:auto;flex:0 1 auto;padding:9px 16px;}
 .kidgrid,.parentgrid,.persongrid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;}
 @media(max-width:640px){.kidgrid,.parentgrid,.persongrid{grid-template-columns:1fr;}}
+
+/* Encarts "Maintenant / À venir / Demain" de l'accueil (views.today) — résumé rapide au
+   dessus des cartes détaillées, pas d'action possible dessus (lecture seule). */
+.home-highlights{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px;}
+@media(max-width:640px){.home-highlights{grid-template-columns:1fr;}}
+.highlight-card{background:var(--card);border-radius:18px;padding:14px 16px;box-shadow:var(--shadow-sm);
+  border:2.5px solid var(--navy);}
+.highlight-card h3{margin:0 0 8px;font-size:12.5px;text-transform:uppercase;letter-spacing:.03em;
+  color:var(--plum);display:flex;align-items:center;}
+.highlight-card .hl-main{font-weight:800;font-size:14.5px;color:var(--navy);}
+.highlight-card .hl-sub{font-size:12.5px;color:var(--muted);font-weight:700;margin-top:2px;}
+.highlight-card .hl-row{font-size:13px;font-weight:700;padding:4px 0;border-bottom:1.5px dashed var(--line);}
+.highlight-card .hl-row:last-child{border-bottom:none;}
+.highlight-card .hl-row.done{color:var(--muted);text-decoration:line-through;}
+.highlight-card a.hl-main{color:var(--navy);text-decoration:none;}
+.highlight-card a.hl-main:hover{text-decoration:underline;}
 .person-col{display:flex;flex-direction:column;gap:16px;}
 .person-name{font-size:17px;margin:0 2px;color:var(--navy);display:flex;align-items:center;gap:8px;}
 .person-name.fille{color:var(--coral-dk);} .person-name.fils{color:var(--mint-dk);}
@@ -190,6 +207,14 @@ nav.tabs a .nav-icon{margin-right:6px;}
 @media(hover:hover){.kidcard:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 var(--navy);}}
 .kidcard.phase-complete{opacity:.6;filter:saturate(.5);}
 @media(hover:hover){.kidcard.phase-complete:hover{opacity:.85;filter:saturate(.75);transform:none;box-shadow:var(--shadow-md);}}
+/* .kidcard is a <details> (see _person_cards.html) so each phase card is a native
+   disclosure/accordion — the current time-of-day period opens expanded, the others
+   collapsed (views._current_phase_now); the browser handles click/keyboard toggling. */
+summary.head{list-style:none;cursor:pointer;}
+summary.head::-webkit-details-marker{display:none;}
+.disclosure-caret{display:inline-block;margin-left:2px;color:var(--muted);font-size:11px;
+  transition:transform .2s ease;}
+.kidcard[open] .disclosure-caret{transform:rotate(180deg);}
 .kidcard .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;
   font-family:var(--font-display);font-weight:700;font-size:18px;gap:8px;}
 .kidcard .head .head-status{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;}
@@ -409,6 +434,7 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
   border:2.5px solid var(--navy);box-shadow:var(--shadow-sm);}
 .flash.success{background:#d6f7ef;color:var(--mint-dk);}
 .flash.error{background:#ffe1e6;color:var(--coral-dk);}
+.flash.info{background:#f1eeff;color:var(--plum-dk);}
 
 @media(max-width:640px){
   input,select,textarea{font-size:16px !important;}
