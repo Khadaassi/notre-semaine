@@ -6,9 +6,9 @@ from django.urls import reverse
 
 from .models import (
     Family, FamilySettings, FamilyMembership, PARENT_ROLES, StarAward, KidStars,
-    TaskCompletion, TaskException, WeeklyMenuEntry, Recipe,
+    TaskCompletion, TaskException, WeeklyMenuEntry, Recipe, Activity,
 )
-from .task_logic import is_zone_b_holiday, ZONE_B_HOLIDAYS
+from .task_logic import is_zone_b_holiday, ZONE_B_HOLIDAYS, find_schedule_conflicts
 from .views import _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _monday_of
 
 
@@ -280,3 +280,86 @@ class WeekNoteDisplayTests(TestCase):
     def test_empty_week_note_renders_no_note_block(self):
         resp = self.client.get(reverse('week'))
         self.assertNotContains(resp, 'weeknote-label')
+
+
+class ScheduleConflictTests(TestCase):
+    """find_schedule_conflicts flags overlapping time ranges for the same person, or for
+    two different people who'd need the same escort (accompanied_by) at once — a display-
+    only signal, no automatic resolution. See task_logic.find_schedule_conflicts."""
+
+    def _activity(self, pk, person, start, end, accompanied_by=''):
+        a = Activity(person=person, label='x', day='lundi', start_time=start, end_time=end,
+                      accompanied_by=accompanied_by)
+        a.id = pk
+        return a
+
+    def test_same_person_overlap_is_flagged(self):
+        a = self._activity(1, 'fille', datetime.time(17, 0), datetime.time(18, 0))
+        b = self._activity(2, 'fille', datetime.time(17, 30), datetime.time(18, 30))
+        self.assertEqual(find_schedule_conflicts([a, b]), {1, 2})
+
+    def test_same_escort_overlap_is_flagged(self):
+        a = self._activity(1, 'fille', datetime.time(17, 0), datetime.time(18, 0), accompanied_by='papa')
+        b = self._activity(2, 'fils', datetime.time(17, 30), datetime.time(18, 30), accompanied_by='papa')
+        self.assertEqual(find_schedule_conflicts([a, b]), {1, 2})
+
+    def test_non_overlapping_times_are_not_flagged(self):
+        a = self._activity(1, 'fille', datetime.time(17, 0), datetime.time(18, 0))
+        b = self._activity(2, 'fille', datetime.time(18, 0), datetime.time(19, 0))
+        self.assertEqual(find_schedule_conflicts([a, b]), set())
+
+    def test_different_people_different_escorts_not_flagged(self):
+        a = self._activity(1, 'fille', datetime.time(17, 0), datetime.time(18, 0), accompanied_by='papa')
+        b = self._activity(2, 'fils', datetime.time(17, 30), datetime.time(18, 30), accompanied_by='maman')
+        self.assertEqual(find_schedule_conflicts([a, b]), set())
+
+    def test_missing_times_are_skipped_without_error(self):
+        a = self._activity(1, 'fille', None, None)
+        b = self._activity(2, 'fille', datetime.time(17, 0), datetime.time(18, 0))
+        self.assertEqual(find_schedule_conflicts([a, b]), set())
+
+
+class WeekViewActivityDisplayTests(TestCase):
+    """Covers the two Activity-related additions to week.html: a `specific_date` one-off
+    shows only on the exact date it falls on (never on its recurring `day` slot too), and
+    two overlapping activities render the 'activity-overlap' visual flag."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='ActFam', invite_code='ACTCODE1')
+        FamilySettings.load(self.family)
+        self.user = User.objects.create_user('actuser', password='pass12345')
+        FamilyMembership.objects.create(user=self.user, family=self.family, role='maman')
+        self.client.force_login(self.user)
+        self.week_start = _monday_of(datetime.date.today())
+
+    def test_specific_date_activity_shows_only_on_its_date(self):
+        one_off_date = self.week_start + datetime.timedelta(days=3)  # jeudi
+        Activity.objects.create(
+            family=self.family, person='fille', label='Spectacle de danse', day='lundi',
+            specific_date=one_off_date,
+        )
+        resp = self.client.get(reverse('week'), {'week': self.week_start.isoformat()})
+        self.assertContains(resp, 'Spectacle de danse')
+        # Rendered once for the desktop table cell and once for the mobile agenda — not a
+        # third time under the (unrelated) 'lundi' slot from its `day` field.
+        self.assertEqual(resp.content.decode().count('Spectacle de danse'), 2)
+
+    def test_overlapping_activities_flagged_in_output(self):
+        Activity.objects.create(
+            family=self.family, person='papa', label='Foot', day='lundi',
+            start_time=datetime.time(17, 0), end_time=datetime.time(18, 0), accompanied_by='papa',
+        )
+        Activity.objects.create(
+            family=self.family, person='fils', label='Judo', day='lundi',
+            start_time=datetime.time(17, 30), end_time=datetime.time(18, 30), accompanied_by='papa',
+        )
+        resp = self.client.get(reverse('week'), {'week': self.week_start.isoformat()})
+        self.assertContains(resp, 'activity-overlap')
+
+    def test_non_overlapping_activities_not_flagged(self):
+        Activity.objects.create(
+            family=self.family, person='papa', label='Foot', day='lundi',
+            start_time=datetime.time(17, 0), end_time=datetime.time(18, 0),
+        )
+        resp = self.client.get(reverse('week'), {'week': self.week_start.isoformat()})
+        self.assertNotContains(resp, 'activity-overlap')

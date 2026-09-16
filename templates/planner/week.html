@@ -35,7 +35,15 @@
         <td class="slot"><span class="row-icon icon-{{ row.icon }}"></span>{{ row.slot }}</td>
         {% for cell in row.cells %}
           <td>
-            {% for line in cell %}{{ line }}{% if not forloop.last %}<br>{% endif %}{% endfor %}
+            {% if row.icon == 'activite' %}
+              {% for item in cell %}
+                <div class="activity-item{% if item.overlap %} activity-overlap{% endif %}">
+                  {% if item.overlap %}<span class="row-icon icon-alerte" title="Chevauchement d'horaire"></span>{% endif %}{{ item.text }}
+                </div>
+              {% endfor %}
+            {% else %}
+              {% for line in cell %}{{ line }}{% if not forloop.last %}<br>{% endif %}{% endfor %}
+            {% endif %}
             {% if not cell %}—{% endif %}
           </td>
         {% endfor %}
@@ -55,7 +63,15 @@
             <div class="agenda-row">
               <div class="agenda-row-slot"><span class="row-icon icon-{{ row.icon }}"></span>{{ row.slot }}</div>
               <div class="agenda-row-content">
-                {% for line in cell %}{{ line }}{% if not forloop.last %}<br>{% endif %}{% endfor %}
+                {% if row.icon == 'activite' %}
+                  {% for item in cell %}
+                    <div class="activity-item{% if item.overlap %} activity-overlap{% endif %}">
+                      {% if item.overlap %}<span class="row-icon icon-alerte" title="Chevauchement d'horaire"></span>{% endif %}{{ item.text }}
+                    </div>
+                  {% endfor %}
+                {% else %}
+                  {% for line in cell %}{{ line }}{% if not forloop.last %}<br>{% endif %}{% endfor %}
+                {% endif %}
               </div>
             </div>
             {% endif %}

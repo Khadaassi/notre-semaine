@@ -23,7 +23,7 @@ from .models import (
 )
 from .task_logic import (
     DAYS, DAY_FULL, tasks_for, next_day, pillar_for, is_zone_b_holiday, DEEP_CLEAN_ROOMS,
-    group_by_phase, apply_order, parse_free_time, split_by_exceptions,
+    group_by_phase, apply_order, parse_free_time, split_by_exceptions, find_schedule_conflicts,
 )
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
 
@@ -409,9 +409,26 @@ def week_view(request):
                 by_label.setdefault(short, []).append(_person_label(p, settings))
         menage_cells.append([f"{' & '.join(names)} : {label}" for label, names in by_label.items()])
 
+        # An Activity with `specific_date` set is a one-off occurrence, shown only on the
+        # exact date it falls on (never recurring); one without it shows every week on its
+        # regular `day` — see Activity.specific_date and task_logic.find_schedule_conflicts.
+        day_activities = [
+            a for a in activities if a.person in people and (
+                (a.specific_date and a.specific_date == real_date) or
+                (not a.specific_date and a.day == d)
+            )
+        ]
+        conflicting_ids = find_schedule_conflicts(day_activities)
         activites_cells.append([
-            f"{_person_label(a.person, settings)} : {a.label}" + (f" ({a.time_range_label()})" if a.time_range_label() else '')
-            for a in activities if a.day == d and a.person in people
+            {
+                'text': (
+                    f"{_person_label(a.person, settings)} : {a.label}"
+                    + (f" ({a.time_range_label()})" if a.time_range_label() else '')
+                    + (' · ponctuel' if a.specific_date else '')
+                ),
+                'overlap': a.id in conflicting_ids,
+            }
+            for a in day_activities
         ])
 
         recipe = menu_by_day.get(d)

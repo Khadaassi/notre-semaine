@@ -48,6 +48,28 @@ def activities_for(person, day, activities):
     return [a for a in activities if a.person == person and a.day == day]
 
 
+def find_schedule_conflicts(day_activities):
+    """Flags Activity rows (any iterable exposing .id, .person, .accompanied_by,
+    .start_time, .end_time) that clash with another activity the same day: either the
+    same person is double-booked, or the same escort (accompanied_by) would need to be
+    in two places at once. Returns the set of ids involved in at least one clash — display
+    only, no automatic resolution. Activities missing start_time or end_time can't be
+    compared for overlap and are simply skipped."""
+    timed = [a for a in day_activities if a.start_time and a.end_time]
+    conflicting_ids = set()
+    for i in range(len(timed)):
+        for j in range(i + 1, len(timed)):
+            a, b = timed[i], timed[j]
+            if a.start_time >= b.end_time or b.start_time >= a.end_time:
+                continue  # no time overlap
+            same_person = a.person == b.person
+            same_escort = a.accompanied_by and a.accompanied_by == b.accompanied_by
+            if same_person or same_escort:
+                conflicting_ids.add(a.id)
+                conflicting_ids.add(b.id)
+    return conflicting_ids
+
+
 _FREE_TIME_RE = re.compile(r'(\d{1,2})\s*[h:]\s*(\d{2})?')
 
 
