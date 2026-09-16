@@ -10,6 +10,7 @@ from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.http import JsonResponse
 from django.shortcuts import render, redirect
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.http import require_POST
@@ -433,6 +434,46 @@ def week_view(request):
         'next_week': week_start + datetime.timedelta(days=7),
         'is_current_week': week_start == today_monday, 'current_week': today_monday,
     })
+
+
+@login_required
+@require_POST
+def duplicate_week(request):
+    """Copies the displayed week's WeeklyMenuEntry rows (the day → recipe menu plan) onto
+    the following week. Scope, decided here: only WeeklyMenuEntry is duplicated — recurring
+    Activity rows (plain `day`, no `specific_date`) already repeat every week on their own,
+    and one-off `specific_date` Activity rows are deliberately NOT carried over, since
+    "duplicate" for a dated one-off event is ambiguous (should the date shift by 7 days? is
+    it still relevant?) and better left to an explicit per-activity action later. A day
+    that already has a menu entry in the target week is left untouched, so duplicating never
+    silently overwrites a menu someone already planned."""
+    family = _get_family(request)
+    week_param = request.POST.get('week')
+    try:
+        source_week = _monday_of(datetime.date.fromisoformat(week_param))
+    except (TypeError, ValueError):
+        source_week = _monday_of(datetime.date.today())
+    target_week = source_week + datetime.timedelta(days=7)
+
+    already_planned_days = set(WeeklyMenuEntry.objects.filter(
+        family=family, week_start=target_week
+    ).values_list('day', flat=True))
+
+    copied = 0
+    for entry in WeeklyMenuEntry.objects.filter(family=family, week_start=source_week):
+        if entry.day in already_planned_days or not entry.recipe_id:
+            continue
+        WeeklyMenuEntry.objects.create(
+            family=family, week_start=target_week, day=entry.day, recipe_id=entry.recipe_id
+        )
+        copied += 1
+
+    if copied:
+        messages.success(request, f"Menu dupliqué vers la semaine suivante ({copied} jour(s) copié(s)).")
+    else:
+        messages.info(request, "Rien à dupliquer : la semaine suivante a déjà un menu pour ces jours, "
+                                "ou la semaine affichée n'a pas de menu.")
+    return redirect(f"{reverse('week')}?week={target_week.isoformat()}")
 
 
 @login_required

@@ -12,6 +12,13 @@
     <a class="week-nav-btn" href="?week={{ next_week|date:'Y-m-d' }}" aria-label="Semaine suivante">→</a>
   </div>
   <div class="hint">{{ rotation_note }}</div>
+
+  <form method="post" action="{% url 'duplicate_week' %}" class="week-duplicate-form">
+    {% csrf_token %}
+    <input type="hidden" name="week" value="{{ week_start|date:'Y-m-d' }}">
+    <button type="submit" class="duplicate-btn">Dupliquer le menu → semaine suivante</button>
+  </form>
+
   <div style="overflow-x:auto">
     <table class="weekgrid">
       <tr><th>Jour</th>{% for h in day_headers %}<th>{{ h }}</th>{% endfor %}</tr>

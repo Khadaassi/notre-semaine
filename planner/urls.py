@@ -8,6 +8,7 @@ urlpatterns = [
     path('reorder-tasks/', views.reorder_tasks, name='reorder_tasks'),
     path('etoiles/', views.stars_view, name='stars'),
     path('semaine/', views.week_view, name='week'),
+    path('semaine/dupliquer/', views.duplicate_week, name='duplicate_week'),
     path('maison/', views.maison, name='maison'),
     path('maison/toggle-course/', views.toggle_grocery, name='toggle_grocery'),
     path('maison/add-course/', views.add_grocery, name='add_grocery'),

@@ -305,6 +305,9 @@ nav.tabs a .nav-icon{margin-right:6px;}
 .week-nav-label{flex:1;text-align:center;min-width:0;}
 .week-nav-label h2{margin:0;}
 .week-nav-today{display:inline-block;margin-top:2px;font-size:12px;font-weight:800;color:var(--plum);text-decoration:underline;}
+
+.week-duplicate-form{margin-bottom:16px;}
+.duplicate-btn{background:var(--mint-dk);font-size:12.5px;padding:9px 16px;}
 .rotation{display:flex;align-items:center;justify-content:space-between;background:#fff6ea;
   border-radius:16px;padding:14px 16px;margin-bottom:12px;border:2.5px solid var(--navy);box-shadow:var(--shadow-sm);}
 .rotation .who{font-family:var(--font-display);font-weight:700;color:var(--navy);font-size:15px;}

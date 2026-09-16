@@ -6,7 +6,7 @@ from django.urls import reverse
 
 from .models import (
     Family, FamilySettings, FamilyMembership, PARENT_ROLES, StarAward, KidStars,
-    TaskCompletion, TaskException,
+    TaskCompletion, TaskException, WeeklyMenuEntry, Recipe,
 )
 from .task_logic import is_zone_b_holiday, ZONE_B_HOLIDAYS
 from .views import _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _monday_of
@@ -205,3 +205,50 @@ class WeekNavigationTests(TestCase):
         next_iso = resp.context['next_week'].isoformat()
         self.assertContains(resp, f'?week={prev_iso}')
         self.assertContains(resp, f'?week={next_iso}')
+
+
+class WeekDuplicationTests(TestCase):
+    """duplicate_week copies the displayed week's WeeklyMenuEntry rows onto the following
+    week. Scope decided in views.duplicate_week: only the menu plan is duplicated — a day
+    already planned in the target week is left untouched (never silently overwritten), and
+    empty (no-recipe) slots aren't copied either."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='DupFam', invite_code='DUPCODE1')
+        FamilySettings.load(self.family)
+        self.user = User.objects.create_user('dupuser', password='pass12345')
+        FamilyMembership.objects.create(user=self.user, family=self.family, role='maman')
+        self.client.force_login(self.user)
+        self.source_week = _monday_of(datetime.date.today())
+        self.target_week = self.source_week + datetime.timedelta(days=7)
+        self.recipe = Recipe.objects.create(family=self.family, name='Poulet rôti')
+        WeeklyMenuEntry.objects.create(
+            family=self.family, week_start=self.source_week, day='lundi', recipe=self.recipe
+        )
+        WeeklyMenuEntry.objects.create(
+            family=self.family, week_start=self.source_week, day='mardi', recipe=None
+        )
+
+    def test_duplicate_copies_recipe_entries_to_next_week(self):
+        self.client.post(reverse('duplicate_week'), {'week': self.source_week.isoformat()})
+        entry = WeeklyMenuEntry.objects.get(family=self.family, week_start=self.target_week, day='lundi')
+        self.assertEqual(entry.recipe, self.recipe)
+
+    def test_duplicate_skips_empty_recipe_slots(self):
+        self.client.post(reverse('duplicate_week'), {'week': self.source_week.isoformat()})
+        self.assertFalse(
+            WeeklyMenuEntry.objects.filter(family=self.family, week_start=self.target_week, day='mardi').exists()
+        )
+
+    def test_duplicate_does_not_overwrite_existing_target_entry(self):
+        other_recipe = Recipe.objects.create(family=self.family, name='Soupe')
+        WeeklyMenuEntry.objects.create(
+            family=self.family, week_start=self.target_week, day='lundi', recipe=other_recipe
+        )
+        self.client.post(reverse('duplicate_week'), {'week': self.source_week.isoformat()})
+        entry = WeeklyMenuEntry.objects.get(family=self.family, week_start=self.target_week, day='lundi')
+        self.assertEqual(entry.recipe, other_recipe)
+
+    def test_duplicate_redirects_to_next_week(self):
+        resp = self.client.post(reverse('duplicate_week'), {'week': self.source_week.isoformat()})
+        self.assertRedirects(resp, f"{reverse('week')}?week={self.target_week.isoformat()}")
