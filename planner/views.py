@@ -227,6 +227,12 @@ def today(request):
         orders.setdefault(o.person, {})[o.task_id] = o.order
     levels = {s.person: _level_for(s.total) for s in KidStars.objects.filter(family=family)}
 
+    # "À préparer pour demain" — any task whose id contains 'demain' (currently sac_demain,
+    # lunchbox_demain in task_logic.py; found by substring rather than hardcoded so a future
+    # '..._demain' task picks itself up automatically) for whoever's visible. Read-only summary
+    # here — the real checkbox stays in the person's own phase card below.
+    tomorrow_prep = []
+
     cards = []
     for person in view_people:
         task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow, custom_tasks)
@@ -242,6 +248,12 @@ def today(request):
             x['seconds_spent'] = tc.seconds_spent if tc else 0
             x['timer_running'] = bool(tc and tc.timer_started_at)
             x['timer_started_ms'] = int(tc.timer_started_at.timestamp() * 1000) if (tc and tc.timer_started_at) else None
+        if is_today_view:
+            for x in task_list:
+                if 'demain' in x['id']:
+                    tomorrow_prep.append({
+                        'name': _person_label(person, settings), 'label': x['label'], 'done': x['done'],
+                    })
         phases = [(pk, pl, apply_order(ts, orders.get(person, {}))) for pk, pl, ts in group_by_phase(task_list)]
         phase_cards = []
         for phase_key, phase_label, tasks in phases:
@@ -275,7 +287,7 @@ def today(request):
         'real_date': real_date, 'settings': settings,
         'kid_unassigned': not is_parent and not membership.kid_person,
         'who_options': who_options, 'who': who,
-        'upcoming_activity': upcoming_activity,
+        'upcoming_activity': upcoming_activity, 'tomorrow_prep': tomorrow_prep,
     })
 
 

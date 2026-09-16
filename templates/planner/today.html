@@ -25,8 +25,9 @@
   {% endfor %}
 </div>
 
-{% if upcoming_activity %}
+{% if upcoming_activity or tomorrow_prep %}
 <div class="home-highlights">
+  {% if upcoming_activity %}
   <div class="highlight-card upcoming">
     <h3><span class="row-icon icon-clock"></span>À venir</h3>
     <div class="hl-main">{{ upcoming_activity.person_name }} — {{ upcoming_activity.label }}</div>
@@ -36,6 +37,15 @@
     {% if upcoming_activity.location %}<div class="hl-sub">Lieu : {{ upcoming_activity.location }}</div>{% endif %}
     {% if upcoming_activity.items_to_bring %}<div class="hl-sub">À apporter : {{ upcoming_activity.items_to_bring }}</div>{% endif %}
   </div>
+  {% endif %}
+  {% if tomorrow_prep %}
+  <div class="highlight-card prep">
+    <h3><span class="row-icon icon-soir"></span>À préparer pour demain</h3>
+    {% for item in tomorrow_prep %}
+      <div class="hl-row {% if item.done %}done{% endif %}">{{ item.name }} — {{ item.label }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 
