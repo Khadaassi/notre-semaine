@@ -81,13 +81,35 @@
 
 <div class="card">
   <h2>Tâches personnalisées</h2>
-  <div class="hint">S'ajoutent à la routine habituelle, sans toucher au code.</div>
+  <div class="hint">S'ajoutent à la routine habituelle, sans toucher au code. Une tâche peut revenir sur plusieurs jours (sélection multiple).</div>
   {% for c in custom_tasks %}
-    <div class="pill">{{ c.person_name }} — {{ c.label }} — {{ c.get_day_display }} ({{ c.get_period_display }})
+    <div class="pill">{{ c.person_name }} — {{ c.label }} — {{ c.days_display }} ({{ c.get_period_display }})
       <form method="post" action="{% url 'delete_custom_task' c.id %}" style="display:inline;" onsubmit="return confirm('Supprimer cette tâche ?');">{% csrf_token %}
         <button type="submit" class="delbtn">✕</button>
       </form>
     </div>
+    <details class="edit-details">
+      <summary>Modifier « {{ c.label }} »</summary>
+      <form method="post" action="{% url 'edit_custom_task' c.id %}" class="addrow" style="flex-wrap:wrap;">
+        {% csrf_token %}
+        <select name="task_person">
+          <option value="fille" {% if c.person == 'fille' %}selected{% endif %}>{{ settings.fille_name }}</option>
+          {% if settings.nb_enfants == 2 %}<option value="fils" {% if c.person == 'fils' %}selected{% endif %}>{{ settings.fils_name }}</option>{% endif %}
+          <option value="maman" {% if c.person == 'maman' %}selected{% endif %}>{{ settings.maman_name }}</option>
+          <option value="papa" {% if c.person == 'papa' %}selected{% endif %}>{{ settings.papa_name }}</option>
+        </select>
+        <input type="text" name="task_label" value="{{ c.label }}" placeholder="Tâche">
+        <select name="task_days" multiple size="4">
+          {% for d in days %}<option value="{{ d }}" {% if d in c.days %}selected{% endif %}>{{ d|capfirst }}</option>{% endfor %}
+        </select>
+        <select name="task_period">
+          <option value="matin" {% if c.period == 'matin' %}selected{% endif %}>Matin</option>
+          <option value="journee" {% if c.period == 'journee' %}selected{% endif %}>Journée</option>
+          <option value="soir" {% if c.period == 'soir' %}selected{% endif %}>Soir</option>
+        </select>
+        <button type="submit">Enregistrer</button>
+      </form>
+    </details>
   {% endfor %}
   <form method="post" class="addrow" style="flex-wrap:wrap;margin-top:10px;">
     {% csrf_token %}
@@ -98,7 +120,7 @@
       <option value="papa">{{ settings.papa_name }}</option>
     </select>
     <input type="text" name="task_label" placeholder="Tâche">
-    <select name="task_day">{% for d in days %}<option value="{{ d }}">{{ d|capfirst }}</option>{% endfor %}</select>
+    <select name="task_days" multiple size="4">{% for d in days %}<option value="{{ d }}">{{ d|capfirst }}</option>{% endfor %}</select>
     <select name="task_period">
       <option value="matin">Matin</option>
       <option value="journee">Journée</option>
@@ -135,6 +157,21 @@
     {% csrf_token %}
     <button type="submit" name="regenerate_tablet_token" value="1">{% if tablet_url %}Régénérer le lien{% else %}Générer le lien{% endif %}</button>
   </form>
+</div>
+
+<div class="card">
+  <h2>Exceptions de tâches</h2>
+  <div class="hint">Créées depuis « Aujourd'hui » (bouton « Gérer les tâches ») : désactivations, journées non applicables et réattributions ponctuelles. « Réactiver » annule l'exception et remet la tâche telle quelle.</div>
+  {% for exc in task_exceptions %}
+    <div class="pill">
+      {{ exc.person_name }} — {{ exc.task_id }} — {{ exc.get_kind_display }}{% if exc.kind == 'reassigned' %} → {{ exc.reassigned_to_name }}{% endif %} ({{ exc.date|date:"d/m/Y" }})
+      <form method="post" action="{% url 'reactivate_task_exception' exc.id %}" style="display:inline;">{% csrf_token %}
+        <button type="submit" class="delbtn">Réactiver</button>
+      </form>
+    </div>
+  {% empty %}
+    <div class="hint" style="margin:0;">Aucune exception active.</div>
+  {% endfor %}
 </div>
 
 <div class="card">

@@ -6,9 +6,16 @@
 {% endif %}
 <div class="today-toolbar">
   <div class="hint" style="margin:0;">{{ real_date|date:"l j F Y"|capfirst }}</div>
-  <button type="button" id="reorderToggle" class="reorder-toggle-btn" aria-pressed="false">
-    <span class="row-icon icon-reorder"></span><span class="toggle-label">Modifier l'ordre</span>
-  </button>
+  <div class="toolbar-btns">
+    {% if is_parent %}
+    <button type="button" id="exceptionToggle" class="exception-toggle-btn" aria-pressed="false">
+      <span class="row-icon icon-exception"></span><span class="toggle-label">Gérer les tâches</span>
+    </button>
+    {% endif %}
+    <button type="button" id="reorderToggle" class="reorder-toggle-btn" aria-pressed="false">
+      <span class="row-icon icon-reorder"></span><span class="toggle-label">Modifier l'ordre</span>
+    </button>
+  </div>
 </div>
 {% if who_options %}
 <div class="whorow">
@@ -282,6 +289,17 @@ if (reorderToggle) {
     const active = document.body.toggleAttribute('data-reorder-mode');
     reorderToggle.setAttribute('aria-pressed', active ? 'true' : 'false');
     reorderToggle.querySelector('.toggle-label').textContent = active ? 'Terminer' : "Modifier l'ordre";
+  });
+}
+
+/* ---- Gérer les tâches (désactiver / non applicable / réattribuer), révélé à la demande —
+   même principe que le mode réorganisation ci-dessus. ---- */
+const exceptionToggle = document.getElementById('exceptionToggle');
+if (exceptionToggle) {
+  exceptionToggle.addEventListener('click', () => {
+    const active = document.body.toggleAttribute('data-exception-mode');
+    exceptionToggle.setAttribute('aria-pressed', active ? 'true' : 'false');
+    exceptionToggle.querySelector('.toggle-label').textContent = active ? 'Terminer' : 'Gérer les tâches';
   });
 }
 

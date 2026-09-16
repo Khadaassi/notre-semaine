@@ -149,11 +149,45 @@ def apply_order(tasks, order_map):
 
 def active_day_mode(family, person, date):
     """Returns the DayMode.mode override for a family/person/date ('vacances', 'absence',
-    'allegee'), or 'normal' if none is set. Not yet used to shape the generated task list —
-    that wiring lands with the routines-v2 UI."""
+    'allegee'), or 'normal' if none is set. See tasks_for's `day_mode` kwarg for how this
+    reshapes the generated task list."""
     from .models import DayMode
     day_mode = DayMode.objects.filter(family=family, person=person, date=date).first()
     return day_mode.mode if day_mode else 'normal'
+
+
+# 'absence' (the person is away for the day): drop anything tied to being physically
+# present somewhere — school, driving to/attending an activity, work — but keep the core
+# spiritual/hygiene/meal routine (prayer, wudu, brushing teeth, showering, meals...), since
+# that's reasonably still relevant wherever they are.
+DAY_MODE_ABSENCE_DROP_IDS = {
+    'ecole', 'devoirs', 'sac_demain', 'sac_semaine', 'activite_famille', 'arabe',
+    'vacances', 'ecran', 'pasecole', 'mahlo', 'travail', 'pickup', 'pickup_midi',
+    'accompagnement', 'journee', 'coran',
+}
+# 'allegee' (lightened day): drop heavy chores and full homework, keep the rest of the
+# routine as-is.
+DAY_MODE_ALLEGEE_DROP_IDS = {'devoirs', 'deepclean', 'lessive', 'frigo', 'draps', 'reset'}
+
+
+def _apply_day_mode(tasks, day_mode):
+    """Drops non-essential tasks for a DayMode-marked day (see active_day_mode) — 'normal'
+    and 'vacances' (already folded into holiday_today by tasks_for) leave the list
+    untouched. Own scheduled activities and driving-to-activity tasks (dynamic ids like
+    'activite0', 'drive_fille1') are always dropped on an 'absence' day, since they assume
+    the person is present that day."""
+    if day_mode not in ('absence', 'allegee'):
+        return tasks
+    drop_ids = DAY_MODE_ABSENCE_DROP_IDS if day_mode == 'absence' else DAY_MODE_ALLEGEE_DROP_IDS
+
+    def keep(task):
+        if task['id'] in drop_ids:
+            return False
+        if day_mode == 'absence' and (task['id'].startswith('activite') or task['id'].startswith('drive_')):
+            return False
+        return True
+
+    return [task for task in tasks if keep(task)]
 
 
 def split_by_exceptions(tasks, disabled_ids, not_applicable_ids):
@@ -415,7 +449,15 @@ def tasks_for_papa(day, settings, activities):
 
 
 def tasks_for(person, day, settings, activities, holiday_today=False, holiday_tomorrow=False,
-              custom_tasks=None):
+              custom_tasks=None, day_mode='normal'):
+    """Builds a person's full task list for a day. `day_mode` (see active_day_mode) is a
+    per-person override: 'vacances' is folded into holiday_today (a DayMode-marked holiday
+    behaves like a Zone B holiday for that person alone), while 'absence'/'allegee' drop a
+    reasonable subset of tasks afterwards (see _apply_day_mode) — a day with fewer tasks
+    from either never penalizes completion/stars, since views._checkable_ids_for and
+    _award_star_if_day_complete recompute the expected set the same way, dynamically."""
+    if day_mode == 'vacances':
+        holiday_today = True
     if person in ('fille', 'fils'):
         tasks = tasks_for_kid(person, day, settings, activities, holiday_today, holiday_tomorrow)
     elif person == 'maman':
@@ -426,6 +468,6 @@ def tasks_for(person, day, settings, activities, holiday_today=False, holiday_to
         tasks = []
     if custom_tasks:
         for ct in custom_tasks:
-            if ct.person == person and ct.day == day:
+            if ct.person == person and day in ct.days:
                 tasks.append(t(f'custom_{ct.id}', ct.label, ct.period))
-    return tasks
+    return _apply_day_mode(tasks, day_mode)

@@ -21,13 +21,16 @@ from .forms import SignUpForm, RecipeForm
 from .models import (
     FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem,
     CustomTask, FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars, TaskException,
-    format_quantity,
+    format_quantity, TASK_EXCEPTION_KIND_CHOICES, DayMode, DAY_MODE_CHOICES, PERSON_CHOICES,
 )
 from .task_logic import (
     DAYS, DAY_FULL, tasks_for, next_day, pillar_for, is_zone_b_holiday, DEEP_CLEAN_ROOMS,
     group_by_phase, apply_order, parse_free_time, split_by_exceptions, find_schedule_conflicts,
+    active_day_mode,
 )
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
+
+PERSON_KEYS = {p for p, _ in PERSON_CHOICES}
 
 PERSON_LABELS_STATIC = {'maman': 'Maman'}
 MENU_GROCERY_CATEGORY = 'Menu de la semaine'  # category tag used by copy_to_courses (see menu())
@@ -246,11 +249,14 @@ def today(request):
     # here — the real checkbox stays in the person's own phase card below.
     tomorrow_prep = []
 
+    all_people = _family_people(settings)
     cards = []
     for person in view_people:
-        task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow, custom_tasks)
-        disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
-        task_list = split_by_exceptions(task_list, disabled_ids, not_applicable_ids)
+        day_mode = active_day_mode(family, person, real_date)
+        task_list = _apply_task_overrides(
+            family, person, day, real_date, settings, activities, custom_tasks,
+            holiday_today, holiday_tomorrow, day_mode=day_mode,
+        )
         completions = {
             tc.task_id: tc
             for tc in TaskCompletion.objects.filter(family=family, person=person, date=real_date)
@@ -286,6 +292,8 @@ def today(request):
             'phase_cards': phase_cards,
             'checkable_by_viewer': is_parent or person == membership.kid_person,
             'level': levels.get(person, 1) if person in ('fille', 'fils') else None,
+            'day_mode': day_mode,
+            'other_people': [(p, _person_label(p, settings)) for p in all_people if p != person],
         })
 
     day_chips = [{'key': d, 'label': DAY_FULL[d], 'full': DAY_FULL[d],
@@ -297,17 +305,18 @@ def today(request):
 
     return render(request, 'planner/today.html', {
         'kid_cards': kid_cards, 'parent_cards': parent_cards, 'day': day, 'day_chips': day_chips,
-        'real_date': real_date, 'settings': settings,
+        'real_date': real_date, 'settings': settings, 'is_parent': is_parent,
         'kid_unassigned': not is_parent and not membership.kid_person,
         'who_options': who_options, 'who': who,
         'upcoming_activity': upcoming_activity, 'tomorrow_prep': tomorrow_prep,
-        'tonight_recipe': tonight_recipe,
+        'tonight_recipe': tonight_recipe, 'day_mode_choices': DAY_MODE_CHOICES,
     })
 
 
 def _exception_id_sets(family, person, date):
     """Splits a person's active TaskException rows for a given date into (disabled_ids,
-    not_applicable_ids) — see task_logic.split_by_exceptions for how these are applied."""
+    not_applicable_ids) — see task_logic.split_by_exceptions for how these are applied.
+    'reassigned' rows are handled separately by _reassignment_maps."""
     disabled_ids, not_applicable_ids = set(), set()
     for exc in TaskException.objects.filter(family=family, person=person, active=True):
         if exc.kind == 'disabled_once' and exc.date == date:
@@ -319,6 +328,48 @@ def _exception_id_sets(family, person, date):
     return disabled_ids, not_applicable_ids
 
 
+def _reassignment_maps(family, date):
+    """Splits active TaskException(kind='reassigned') rows for one date into:
+    - outgoing: person -> {task_id} handed away (dropped from that person's own list)
+    - incoming: person -> [(from_person, task_id)] handed to them for that date
+    See _apply_task_overrides for how both are folded into the final per-person task list;
+    this is what makes 'passer une tâche à l'autre parent' (point 5) work."""
+    outgoing, incoming = {}, {}
+    for exc in TaskException.objects.filter(family=family, kind='reassigned', active=True, date=date):
+        if not exc.reassigned_to:
+            continue
+        outgoing.setdefault(exc.person, set()).add(exc.task_id)
+        incoming.setdefault(exc.reassigned_to, []).append((exc.person, exc.task_id))
+    return outgoing, incoming
+
+
+def _apply_task_overrides(family, person, day, real_date, settings, activities, custom_tasks,
+                           holiday_today, holiday_tomorrow, day_mode='normal', own_task_list=None):
+    """Builds a person's final task list for one date: their generated/custom tasks, with
+    TaskException disabled/not_applicable overrides applied and reassignments folded in
+    (tasks handed off to this person appear here with a 'reassigned_from_label'; tasks
+    handed away disappear). Shared by views.today (display) and _checkable_ids_for
+    (completion/star calculation) so the two stay in lockstep."""
+    if own_task_list is None:
+        own_task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow,
+                                   custom_tasks, day_mode=day_mode)
+    disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
+    outgoing, incoming = _reassignment_maps(family, real_date)
+    disabled_ids = disabled_ids | outgoing.get(person, set())
+    task_list = split_by_exceptions(own_task_list, disabled_ids, not_applicable_ids)
+    for from_person, task_id in incoming.get(person, []):
+        from_mode = active_day_mode(family, from_person, real_date)
+        from_list = tasks_for(from_person, day, settings, activities, holiday_today, holiday_tomorrow,
+                               custom_tasks, day_mode=from_mode)
+        source = next((x for x in from_list if x['id'] == task_id), None)
+        if source:
+            task_list.append(dict(
+                source, id=f'reassigned_{from_person}_{task_id}', not_applicable=False,
+                reassigned_from_label=_person_label(from_person, settings),
+            ))
+    return task_list
+
+
 def _checkable_ids_for(person, day, family):
     settings = FamilySettings.load(family)
     activities = list(Activity.objects.filter(family=family))
@@ -326,9 +377,11 @@ def _checkable_ids_for(person, day, family):
     real_date = _real_date_for_day(day)
     holiday_today = is_zone_b_holiday(real_date)
     holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
-    task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow, custom_tasks)
-    disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
-    task_list = split_by_exceptions(task_list, disabled_ids, not_applicable_ids)
+    day_mode = active_day_mode(family, person, real_date)
+    task_list = _apply_task_overrides(
+        family, person, day, real_date, settings, activities, custom_tasks,
+        holiday_today, holiday_tomorrow, day_mode=day_mode,
+    )
     return {x['id'] for x in task_list if not x['info'] and not x['not_applicable']}
 
 
@@ -536,7 +589,8 @@ def week_view(request):
 
         by_label = {}
         for p in people:
-            for x in tasks_for(p, d, settings, activities, holiday, False):
+            day_mode = active_day_mode(family, p, real_date)
+            for x in tasks_for(p, d, settings, activities, holiday, False, day_mode=day_mode):
                 if x['id'] in MENAGE_DAILY_IDS or pillar_for(x['id'], x['period']) != 'menage':
                     continue
                 short = DEEP_CLEAN_ROOMS[d] if x['id'] == 'deepclean' else MENAGE_SHORT_LABELS.get(x['id'], x['label'])
@@ -859,15 +913,18 @@ def settings_view(request):
                 messages.success(request, "Activité ajoutée.")
         elif 'add_custom_task' in request.POST:
             label = request.POST.get('task_label', '').strip()
-            if label:
+            days_selected = [d for d in request.POST.getlist('task_days') if d in DAYS]
+            if label and days_selected:
                 CustomTask.objects.create(
                     family=family,
                     person=request.POST.get('task_person', 'fille'),
-                    day=request.POST.get('task_day', 'lundi'),
+                    days=days_selected,
                     period=request.POST.get('task_period', 'matin'),
                     label=label,
                 )
                 messages.success(request, "Tâche ajoutée.")
+            else:
+                messages.error(request, "Merci d'indiquer un intitulé et au moins un jour.")
         elif 'save_rewards' in request.POST:
             try:
                 milestone = int(request.POST.get('star_milestone', settings.star_milestone))
@@ -907,9 +964,14 @@ def settings_view(request):
         c.person_name = _person_label(c.person, settings)
     members = FamilyMembership.objects.filter(family=family).select_related('user')
     tablet_url = request.build_absolute_uri(reverse('tablet', args=[settings.tablet_token])) if settings.tablet_token else ''
+    task_exceptions = list(TaskException.objects.filter(family=family, active=True).order_by('-date'))
+    for exc in task_exceptions:
+        exc.person_name = _person_label(exc.person, settings)
+        exc.reassigned_to_name = _person_label(exc.reassigned_to, settings) if exc.reassigned_to else ''
     return render(request, 'planner/settings.html', {
         'settings': settings, 'activities': activities, 'custom_tasks': custom_tasks,
         'days': DAYS, 'day_full': DAY_FULL, 'members': members, 'tablet_url': tablet_url,
+        'task_exceptions': task_exceptions,
     })
 
 
@@ -1019,9 +1081,11 @@ def tablet_view(request, token):
 
     cards = []
     for person in people:
-        task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow, custom_tasks)
-        disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
-        task_list = split_by_exceptions(task_list, disabled_ids, not_applicable_ids)
+        day_mode = active_day_mode(family, person, real_date)
+        task_list = _apply_task_overrides(
+            family, person, day, real_date, settings, activities, custom_tasks,
+            holiday_today, holiday_tomorrow, day_mode=day_mode,
+        )
         completions = {
             tc.task_id: tc
             for tc in TaskCompletion.objects.filter(family=family, person=person, date=real_date)
@@ -1075,3 +1139,127 @@ def tablet_view(request, token):
         'day': day, 'day_chips': day_chips, 'real_date': real_date, 'settings': settings,
         'dinner': dinner, 'upcoming': upcoming,
     })
+
+
+@login_required
+@parent_required
+def edit_custom_task(request, pk):
+    """Classic edit for a CustomTask (label/person/days/period) — the "modifier" half of
+    point 2. Only CustomTask rows are editable this way: a generated task_logic.py task
+    (e.g. 'lit', 'priere_m') has no row to edit, since it's produced by a Python function,
+    not stored data — for those, see create_task_exception (disable) and reassign_task
+    (hand off to someone else) instead."""
+    family = _get_family(request)
+    task = CustomTask.objects.filter(pk=pk, family=family).first()
+    if not task:
+        messages.error(request, "Tâche introuvable.")
+        return redirect('settings')
+    if request.method == 'POST':
+        label = request.POST.get('task_label', '').strip()
+        days_selected = [d for d in request.POST.getlist('task_days') if d in DAYS]
+        if label and days_selected:
+            task.label = label
+            task.person = request.POST.get('task_person', task.person)
+            task.period = request.POST.get('task_period', task.period)
+            task.days = days_selected
+            task.save()
+            messages.success(request, "Tâche modifiée.")
+        else:
+            messages.error(request, "Merci d'indiquer un intitulé et au moins un jour.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+@require_POST
+def create_task_exception(request):
+    """Creates a disabled_once / disabled_from / not_applicable TaskException — point 1's
+    "désactiver une tâche". Posted from the per-task controls revealed by the "Gérer les
+    tâches" toggle on 'Aujourd'hui' (today.html [data-exception-mode]), the same on-demand
+    reveal pattern as the reorder-mode arrows in design-v2."""
+    family = _get_family(request)
+    person = request.POST.get('person')
+    task_id = request.POST.get('task_id', '').strip()
+    day = request.POST.get('day')
+    kind = request.POST.get('kind')
+    valid_kinds = {k for k, _ in TASK_EXCEPTION_KIND_CHOICES if k != 'reassigned'}
+    if person not in PERSON_KEYS or not task_id or day not in DAYS or kind not in valid_kinds:
+        messages.error(request, "Action impossible.")
+        return redirect(f"{reverse('today')}?day={day}" if day in DAYS else reverse('today'))
+    real_date = _real_date_for_day(day)
+    TaskException.objects.create(family=family, person=person, task_id=task_id, kind=kind, date=real_date)
+    messages.success(request, "Tâche mise à jour pour ce jour.")
+    return redirect(f"{reverse('today')}?day={day}")
+
+
+@login_required
+@parent_required
+@require_POST
+def reassign_task(request):
+    """Hands a task off to another family member for one day (point 5) by creating a
+    TaskException(kind='reassigned'): it disappears from `person`'s list and appears in
+    `reassigned_to`'s (see views._reassignment_maps / _apply_task_overrides). Chosen over a
+    dedicated reassignment table since TaskException already models "an override on a task
+    for a date" — adding a `reassigned_to` field reuses that shape instead of introducing a
+    parallel mechanism."""
+    family = _get_family(request)
+    person = request.POST.get('person')
+    task_id = request.POST.get('task_id', '').strip()
+    day = request.POST.get('day')
+    reassigned_to = request.POST.get('reassigned_to')
+    if (person not in PERSON_KEYS or reassigned_to not in PERSON_KEYS or person == reassigned_to
+            or not task_id or day not in DAYS):
+        messages.error(request, "Réattribution impossible.")
+        return redirect(f"{reverse('today')}?day={day}" if day in DAYS else reverse('today'))
+    real_date = _real_date_for_day(day)
+    TaskException.objects.create(
+        family=family, person=person, task_id=task_id, kind='reassigned', date=real_date,
+        reassigned_to=reassigned_to,
+    )
+    messages.success(request, "Tâche réattribuée pour ce jour.")
+    return redirect(f"{reverse('today')}?day={day}")
+
+
+@login_required
+@parent_required
+@require_POST
+def reactivate_task_exception(request, pk):
+    """'Reactivating' means turning the underlying task back ON — see TaskException.active's
+    docstring: flipping active to False cancels the override (disable/not_applicable/
+    reassignment alike), which is the one mechanism point 1 asks for to review/undo any
+    exception from the settings page."""
+    family = _get_family(request)
+    exc = TaskException.objects.filter(pk=pk, family=family).first()
+    if exc:
+        exc.active = False
+        exc.save(update_fields=['active'])
+        messages.success(request, "Tâche réactivée.")
+    else:
+        messages.error(request, "Action impossible.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+@require_POST
+def set_day_mode(request):
+    """Sets (or, choosing 'normal', clears) a person's DayMode for one calendar day — point
+    4's UI for task_logic.active_day_mode. Surfaced on 'Aujourd'hui' (per person-card select)
+    rather than in settings, since "is X away/on a lightened day today" is a decision
+    naturally tied to the specific day being viewed, not a standing family setting."""
+    family = _get_family(request)
+    person = request.POST.get('person')
+    day = request.POST.get('day')
+    mode = request.POST.get('mode')
+    valid_modes = {m for m, _ in DAY_MODE_CHOICES}
+    if person not in PERSON_KEYS or day not in DAYS or mode not in valid_modes:
+        messages.error(request, "Action impossible.")
+        return redirect('today')
+    real_date = _real_date_for_day(day)
+    if mode == 'normal':
+        DayMode.objects.filter(family=family, person=person, date=real_date).delete()
+    else:
+        DayMode.objects.update_or_create(
+            family=family, person=person, date=real_date, defaults={'mode': mode},
+        )
+    return redirect(f"{reverse('today')}?day={day}")

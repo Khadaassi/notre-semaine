@@ -328,43 +328,56 @@ class WeeklyMenuEntry(models.Model):
 PHASE_CHOICES = [('matin', 'Matin'), ('journee', 'Journée'), ('soir', 'Soir')]
 
 
+DAY_LABELS = dict(DAY_CHOICES)
+
+
 class CustomTask(models.Model):
     """A task added from the UI, on top of the built-in routine — same shape (person,
-    day, a time-of-day slot), rendered alongside the built-in tasks in 'Aujourd'hui'."""
+    a time-of-day slot), rendered alongside the built-in tasks in 'Aujourd'hui'. `days` is
+    the list of weekday keys it recurs on (its "frequency") — replaces the old single-day
+    `day` field (see the 0015-0017 migrations for the day -> days conversion)."""
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     person = models.CharField(max_length=10, choices=PERSON_CHOICES)
-    day = models.CharField(max_length=10, choices=DAY_CHOICES)
+    days = models.JSONField(default=list, blank=True)
     period = models.CharField(max_length=10, choices=PHASE_CHOICES, default='matin')
     label = models.CharField(max_length=150)
 
     class Meta:
-        ordering = ['day', 'period', 'id']
+        ordering = ['period', 'id']
 
     def __str__(self):
-        return f"{self.get_person_display()} — {self.label} ({self.get_day_display()})"
+        return f"{self.get_person_display()} — {self.label} ({self.days_display()})"
+
+    def days_display(self):
+        return ', '.join(DAY_LABELS.get(d, d) for d in self.days)
 
 
 TASK_EXCEPTION_KIND_CHOICES = [
     ('disabled_once', 'Désactivée pour ce jour'),
     ('disabled_from', 'Désactivée à partir de cette date'),
     ('not_applicable', "Non applicable ce jour (n'affecte pas le taux de complétion)"),
+    ('reassigned', 'Réattribuée à un autre membre pour ce jour'),
 ]
 
 
 class TaskException(models.Model):
     """An override on a generated (task_logic) or custom task, keyed by its task_id — lets
-    a parent skip a task for one day, suspend it indefinitely, or mark a day where it
-    doesn't apply without that counting against completion/star eligibility. See
-    task_logic.split_by_exceptions for how this is applied; no management UI yet (routines-v2)."""
+    a parent skip a task for one day, suspend it indefinitely, mark a day where it doesn't
+    apply without that counting against completion/star eligibility, or hand it off to
+    another family member for one day. See task_logic.split_by_exceptions for how
+    disabled/not_applicable are applied, and views._reassignment_maps for 'reassigned'."""
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     person = models.CharField(max_length=10, choices=PERSON_CHOICES)
     task_id = models.CharField(max_length=60)
     kind = models.CharField(max_length=20, choices=TASK_EXCEPTION_KIND_CHOICES)
-    # For 'disabled_once' / 'not_applicable': the exact date it applies to.
+    # For 'disabled_once' / 'not_applicable' / 'reassigned': the exact date it applies to.
     # For 'disabled_from': the date from which the task is suspended (inclusive).
     date = models.DateField()
-    # Lets a 'disabled_from' suspension be explicitly reactivated (turned back on) without
-    # deleting the historical row — flip to False to reactivate.
+    # Only set (and only meaningful) for kind='reassigned': who the task is handed to for
+    # that date — the task disappears from `person`'s list and appears in this person's.
+    reassigned_to = models.CharField(max_length=10, choices=PERSON_CHOICES, blank=True, default='')
+    # Lets a 'disabled_from' suspension (or any other exception) be explicitly reactivated
+    # (turned back on) without deleting the historical row — flip to False to reactivate.
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
