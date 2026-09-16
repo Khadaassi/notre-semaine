@@ -358,6 +358,53 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
   border:2.5px solid var(--navy);font-size:14px;font-weight:700;}
 .card form p input[type=file]{font-size:13px;font-weight:600;}
 
+/* ---- Lot 4 : menu → courses (favoris, durée, étapes, badges, détail d'article) ---- */
+.head-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:4px;}
+.fav-filter-link{font-size:12.5px;font-weight:800;color:var(--plum);text-decoration:underline;flex-shrink:0;}
+
+.fav-toggle-btn{border:none !important;background:transparent !important;box-shadow:none !important;
+  color:var(--line);font-size:16px;cursor:pointer;padding:0 4px 0 0;vertical-align:-1px;transform:none !important;}
+.fav-toggle-btn:hover{color:var(--sun);}
+.fav-toggle-btn.active{color:var(--sun);}
+.recipe.favorite{border-color:var(--sun);}
+
+.duration-tag,.qty-tag{background:#fff6ea;border:1.5px solid var(--sun);border-radius:8px;padding:2px 8px;
+  font-size:11.5px;font-weight:800;color:var(--navy);margin-left:6px;white-space:nowrap;}
+
+.steps-toggle{border:none;background:transparent;color:var(--plum);font-weight:800;font-size:12px;
+  cursor:pointer;text-decoration:underline;padding:6px 0 0;box-shadow:none !important;transform:none !important;}
+.steps-toggle:hover{background:transparent;color:var(--plum-dk);}
+.steps-toggle::before{display:none;}
+.steps-list{margin:0;padding-left:20px;font-size:13px;font-weight:600;color:var(--ink);}
+.steps-list li{margin-bottom:6px;}
+
+.row-detail-toggle{border:none !important;background:transparent;box-shadow:none !important;color:var(--muted);
+  padding:0;width:22px;height:22px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;
+  flex-shrink:0;margin-top:1px;cursor:pointer;font-weight:800;transform:none !important;}
+.row-detail-toggle:hover{background:#f1eeff;color:var(--navy);}
+.task-detail .home-toggle-btn{background:#f7f5ff;color:var(--navy);padding:7px 12px;border-radius:10px;
+  font-size:12.5px;margin-bottom:8px;}
+.task-detail .home-toggle-btn:hover{background:#e9e4ff;}
+.edit-grocery-form{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;flex-basis:100%;}
+.edit-grocery-form input{flex:1 1 90px;min-width:70px;padding:7px 9px;border-radius:9px;border:2px solid var(--navy);
+  font-size:13px;font-weight:700;font-family:var(--font-body);}
+.edit-grocery-form button{padding:7px 12px;font-size:12.5px;}
+.task-detail form{flex-basis:100%;}
+
+.src-badge{display:inline-flex;align-items:center;border-radius:999px;padding:2px 9px;font-size:10.5px;
+  font-weight:800;margin-left:6px;text-transform:uppercase;letter-spacing:.02em;vertical-align:1px;}
+.src-badge.menu{background:var(--plum);color:#fff;}
+.src-badge.default{background:#f1eeff;color:var(--navy-2);}
+.src-badge.home{background:var(--mint);color:#053b34;}
+.courses-cat.menu-week h3{color:var(--plum-dk);}
+.task.grocery-item.already-home label{opacity:.55;}
+.task.grocery-item.already-home{opacity:.75;}
+
+.conflict-card{border:2.5px solid var(--coral);}
+.conflict-card h2{color:var(--coral-dk);}
+.conflict-actions{display:inline-block;margin:12px 10px 0 0;}
+.secondary-btn{background:white !important;color:var(--navy) !important;}
+
 .flash{border-radius:14px;padding:10px 16px;margin-bottom:16px;font-size:13.5px;font-weight:800;
   border:2.5px solid var(--navy);box-shadow:var(--shadow-sm);}
 .flash.success{background:#d6f7ef;color:var(--mint-dk);}
@@ -367,6 +414,7 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
   input,select,textarea{font-size:16px !important;}
   .addrow{flex-direction:column;}
   .addrow input,.addrow select{width:100%;}
+  .edit-grocery-form input{flex-basis:100%;}
   .task{padding:10px 4px;}
   header.top{flex-direction:column;align-items:flex-start;}
   header.top .header-actions{align-self:flex-end;margin-top:-8px;}
