@@ -25,7 +25,7 @@
   {% endfor %}
 </div>
 
-{% if upcoming_activity or tomorrow_prep %}
+{% if upcoming_activity or tomorrow_prep or tonight_recipe %}
 <div class="home-highlights">
   {% if upcoming_activity %}
   <div class="highlight-card upcoming">
@@ -44,6 +44,12 @@
     {% for item in tomorrow_prep %}
       <div class="hl-row {% if item.done %}done{% endif %}">{{ item.name }} — {{ item.label }}</div>
     {% endfor %}
+  </div>
+  {% endif %}
+  {% if tonight_recipe %}
+  <div class="highlight-card repas">
+    <h3><span class="row-icon icon-repas"></span>Repas du soir</h3>
+    <a href="{% url 'menu' %}" class="hl-main hl-link">{{ tonight_recipe.name }}</a>
   </div>
   {% endif %}
 </div>

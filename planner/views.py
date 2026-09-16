@@ -161,6 +161,14 @@ def today(request):
     now = datetime.datetime.now()
     current_phase = _current_phase_now(now.time())
 
+    # Direct access to the evening meal — unlike "À venir"/"À préparer pour demain" this isn't
+    # relative to right now, so it's shown for whichever day chip is selected, not just today.
+    week_start = _monday_of(datetime.date.today())
+    menu_entry = WeeklyMenuEntry.objects.filter(
+        family=family, week_start=week_start, day=day
+    ).select_related('recipe').first()
+    tonight_recipe = menu_entry.recipe if menu_entry else None
+
     membership = request.user.familymembership
     is_parent = membership.role in PARENT_ROLES
     # An 'enfants' account only ever gets to see/act on the one kid_person a parent has
@@ -288,6 +296,7 @@ def today(request):
         'kid_unassigned': not is_parent and not membership.kid_person,
         'who_options': who_options, 'who': who,
         'upcoming_activity': upcoming_activity, 'tomorrow_prep': tomorrow_prep,
+        'tonight_recipe': tonight_recipe,
     })
 
 
