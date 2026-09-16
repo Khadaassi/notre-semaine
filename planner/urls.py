@@ -17,6 +17,7 @@ urlpatterns = [
     path('reglages/', views.settings_view, name='settings'),
     path('reglages/activite/<int:pk>/supprimer/', views.delete_activity, name='delete_activity'),
     path('reglages/tache/<int:pk>/supprimer/', views.delete_custom_task, name='delete_custom_task'),
+    path('reglages/tache/<int:pk>/modifier/', views.edit_custom_task, name='edit_custom_task'),
     path('reglages/membre/<int:pk>/retirer/', views.remove_member, name='remove_member'),
     path('reglages/membre/<int:pk>/promouvoir/', views.promote_member, name='promote_member'),
     path('inscription/', views.signup, name='signup'),

@@ -234,6 +234,46 @@ class CustomTaskMultiDayTests(TestCase):
         self.assertEqual(task.days_display(), 'Mercredi, Lundi')
 
 
+class CustomTaskSettingsViewTests(TestCase):
+    """Point 2/3: creating and classically editing a CustomTask from the settings page,
+    with the multi-day select."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='CTV', invite_code='CTVIEWFAM1')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('ctparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+
+    def test_add_custom_task_with_multiple_days(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fille', 'task_label': 'Piano',
+            'task_days': ['lundi', 'mercredi'], 'task_period': 'soir',
+        })
+        self.assertEqual(resp.status_code, 302)
+        task = CustomTask.objects.get(family=self.family, label='Piano')
+        self.assertEqual(sorted(task.days), ['lundi', 'mercredi'])
+
+    def test_add_custom_task_without_any_day_is_rejected(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fille', 'task_label': 'NoDays', 'task_period': 'soir',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(CustomTask.objects.filter(family=self.family, label='NoDays').exists())
+
+    def test_edit_custom_task_updates_days_label_and_person(self):
+        task = CustomTask.objects.create(
+            family=self.family, person='fille', days=['lundi'], period='matin', label='Old',
+        )
+        resp = self.client.post(reverse('edit_custom_task', args=[task.id]), {
+            'task_person': 'fils', 'task_label': 'New', 'task_days': ['mardi', 'jeudi'], 'task_period': 'soir',
+        })
+        self.assertEqual(resp.status_code, 302)
+        task.refresh_from_db()
+        self.assertEqual(task.label, 'New')
+        self.assertEqual(sorted(task.days), ['jeudi', 'mardi'])
+        self.assertEqual(task.person, 'fils')
+
 
 class CustomTaskDaysDataMigrationTests(TransactionTestCase):
     """Exercises the CustomTask day -> days data migration (0016_customtask_populate_days)

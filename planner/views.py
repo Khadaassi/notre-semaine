@@ -547,15 +547,18 @@ def settings_view(request):
                 messages.success(request, "Activité ajoutée.")
         elif 'add_custom_task' in request.POST:
             label = request.POST.get('task_label', '').strip()
-            if label:
+            days_selected = [d for d in request.POST.getlist('task_days') if d in DAYS]
+            if label and days_selected:
                 CustomTask.objects.create(
                     family=family,
                     person=request.POST.get('task_person', 'fille'),
-                    day=request.POST.get('task_day', 'lundi'),
+                    days=days_selected,
                     period=request.POST.get('task_period', 'matin'),
                     label=label,
                 )
                 messages.success(request, "Tâche ajoutée.")
+            else:
+                messages.error(request, "Merci d'indiquer un intitulé et au moins un jour.")
         else:
             settings.maman_name = request.POST.get('maman_name', settings.maman_name).strip() or settings.maman_name
             settings.fille_name = request.POST.get('fille_name', settings.fille_name).strip() or settings.fille_name
@@ -638,4 +641,32 @@ def delete_activity(request, pk):
 def delete_custom_task(request, pk):
     CustomTask.objects.filter(pk=pk, family=_get_family(request)).delete()
     messages.success(request, "Tâche supprimée.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+def edit_custom_task(request, pk):
+    """Classic edit for a CustomTask (label/person/days/period) — the "modifier" half of
+    point 2. Only CustomTask rows are editable this way: a generated task_logic.py task
+    (e.g. 'lit', 'priere_m') has no row to edit, since it's produced by a Python function,
+    not stored data — for those, see create_task_exception instead (disable a task; a
+    reassign-to-someone-else action follows in a later change)."""
+    family = _get_family(request)
+    task = CustomTask.objects.filter(pk=pk, family=family).first()
+    if not task:
+        messages.error(request, "Tâche introuvable.")
+        return redirect('settings')
+    if request.method == 'POST':
+        label = request.POST.get('task_label', '').strip()
+        days_selected = [d for d in request.POST.getlist('task_days') if d in DAYS]
+        if label and days_selected:
+            task.label = label
+            task.person = request.POST.get('task_person', task.person)
+            task.period = request.POST.get('task_period', task.period)
+            task.days = days_selected
+            task.save()
+            messages.success(request, "Tâche modifiée.")
+        else:
+            messages.error(request, "Merci d'indiquer un intitulé et au moins un jour.")
     return redirect('settings')
