@@ -2,6 +2,7 @@ from django.contrib import admin
 from .models import (
     Family, FamilyMembership, FamilySettings, Activity, TaskCompletion, Recipe,
     WeeklyMenuEntry, CustomTask, GroceryItem, TaskOrder, StarAward, KidStars, TaskException,
+    DayMode,
 )
 
 
@@ -28,3 +29,4 @@ admin.site.register(TaskOrder)
 admin.site.register(StarAward)
 admin.site.register(KidStars)
 admin.site.register(TaskException)
+admin.site.register(DayMode)

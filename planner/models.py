@@ -238,6 +238,30 @@ class TaskException(models.Model):
         return f"{self.person} {self.task_id} {self.kind} {self.date}"
 
 
+DAY_MODE_CHOICES = [
+    ('normal', 'École normale'),
+    ('vacances', 'Vacances'),
+    ('absence', 'Absence'),
+    ('allegee', 'Journée allégée'),
+]
+
+
+class DayMode(models.Model):
+    """Marks a person's day with a mode other than 'normal' school routine — will drive
+    which tasks get generated in the routines-v2 UI. See task_logic.active_day_mode for the
+    lookup helper; querying with no row present means 'normal'."""
+    family = models.ForeignKey(Family, on_delete=models.CASCADE)
+    person = models.CharField(max_length=10, choices=PERSON_CHOICES)
+    date = models.DateField()
+    mode = models.CharField(max_length=20, choices=DAY_MODE_CHOICES, default='normal')
+
+    class Meta:
+        unique_together = ('family', 'person', 'date')
+
+    def __str__(self):
+        return f"{self.person} {self.date}: {self.mode}"
+
+
 class GroceryItem(models.Model):
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     name = models.CharField(max_length=150)

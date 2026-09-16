@@ -125,6 +125,15 @@ def apply_order(tasks, order_map):
     return [task for idx, task in sorted(enumerate(tasks), key=sort_key)]
 
 
+def active_day_mode(family, person, date):
+    """Returns the DayMode.mode override for a family/person/date ('vacances', 'absence',
+    'allegee'), or 'normal' if none is set. Not yet used to shape the generated task list —
+    that wiring lands with the routines-v2 UI."""
+    from .models import DayMode
+    day_mode = DayMode.objects.filter(family=family, person=person, date=date).first()
+    return day_mode.mode if day_mode else 'normal'
+
+
 def split_by_exceptions(tasks, disabled_ids, not_applicable_ids):
     """Applies TaskException overrides to a generated task list: 'disabled' tasks are
     dropped entirely, 'not applicable' tasks are kept (still visible) but flagged so the
