@@ -14,6 +14,13 @@
   </div>
   <div class="hint">{{ rotation_note }}</div>
 
+  {% if week_note %}
+  <div class="weeknote">
+    <div class="weeknote-label">Note de la semaine</div>
+    <div class="weeknote-text">{{ week_note|linebreaksbr }}</div>
+  </div>
+  {% endif %}
+
   <form method="post" action="{% url 'duplicate_week' %}" class="week-duplicate-form">
     {% csrf_token %}
     <input type="hidden" name="week" value="{{ week_start|date:'Y-m-d' }}">

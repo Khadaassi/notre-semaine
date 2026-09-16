@@ -433,6 +433,7 @@ def week_view(request):
         'prev_week': week_start - datetime.timedelta(days=7),
         'next_week': week_start + datetime.timedelta(days=7),
         'is_current_week': week_start == today_monday, 'current_week': today_monday,
+        'week_note': settings.week_note,
     })
 
 

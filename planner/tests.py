@@ -252,3 +252,31 @@ class WeekDuplicationTests(TestCase):
     def test_duplicate_redirects_to_next_week(self):
         resp = self.client.post(reverse('duplicate_week'), {'week': self.source_week.isoformat()})
         self.assertRedirects(resp, f"{reverse('week')}?week={self.target_week.isoformat()}")
+
+
+class WeekNoteDisplayTests(TestCase):
+    """FamilySettings.week_note was saved from the settings form but never rendered
+    anywhere — now shown on both 'Aujourd'hui' and 'Organisation' when non-empty."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='NoteFam', invite_code='NOTECODE1')
+        self.settings = FamilySettings.load(self.family)
+        self.user = User.objects.create_user('noteuser', password='pass12345')
+        FamilyMembership.objects.create(user=self.user, family=self.family, role='maman')
+        self.client.force_login(self.user)
+
+    def test_week_note_shown_on_week_view_when_set(self):
+        self.settings.week_note = 'Mamie vient dîner mercredi'
+        self.settings.save()
+        resp = self.client.get(reverse('week'))
+        self.assertContains(resp, 'Mamie vient dîner mercredi')
+
+    def test_week_note_shown_on_today_view_when_set(self):
+        self.settings.week_note = 'Anniversaire de Papa vendredi'
+        self.settings.save()
+        resp = self.client.get(reverse('today'))
+        self.assertContains(resp, 'Anniversaire de Papa vendredi')
+
+    def test_empty_week_note_renders_no_note_block(self):
+        resp = self.client.get(reverse('week'))
+        self.assertNotContains(resp, 'weeknote-label')
