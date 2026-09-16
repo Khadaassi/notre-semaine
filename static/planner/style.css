@@ -191,6 +191,14 @@ nav.tabs a .nav-icon{margin-right:6px;}
 @media(hover:hover){.kidcard:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 var(--navy);}}
 .kidcard.phase-complete{opacity:.6;filter:saturate(.5);}
 @media(hover:hover){.kidcard.phase-complete:hover{opacity:.85;filter:saturate(.75);transform:none;box-shadow:var(--shadow-md);}}
+/* .kidcard is a <details> (see _person_cards.html) so each phase card is a native
+   disclosure/accordion — the current time-of-day period opens expanded, the others
+   collapsed (views._current_phase_now); the browser handles click/keyboard toggling. */
+summary.head{list-style:none;cursor:pointer;}
+summary.head::-webkit-details-marker{display:none;}
+.disclosure-caret{display:inline-block;margin-left:2px;color:var(--muted);font-size:11px;
+  transition:transform .2s ease;}
+.kidcard[open] .disclosure-caret{transform:rotate(180deg);}
 .kidcard .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;
   font-family:var(--font-display);font-weight:700;font-size:18px;gap:8px;}
 .kidcard .head .head-status{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;}

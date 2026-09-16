@@ -96,6 +96,20 @@ def _real_date_for_day(day):
     return datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
 
 
+def _current_phase_now(now_time):
+    """Maps a wall-clock time to one of the 3 accordion phases used on 'Aujourd'hui'
+    (see group_by_phase in task_logic.py): before 12h00 = matin, 12h00–18h00 = journée,
+    18h00 onward = soir. A simple, deliberately time-of-day-only split — it has no relation
+    to any one family member's actual school/work hours (which vary by day and person, see
+    task_logic.is_bureau_day etc.) and isn't meant to be precise, just a reasonable default
+    for which accordion panel opens automatically."""
+    if now_time < datetime.time(12, 0):
+        return 'matin'
+    if now_time < datetime.time(18, 0):
+        return 'journee'
+    return 'soir'
+
+
 def _ensure_seed_data(family):
     if not Recipe.objects.filter(family=family).exists():
         for r in DEFAULT_RECIPES:
@@ -140,6 +154,12 @@ def today(request):
     real_date = datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
     holiday_today = is_zone_b_holiday(real_date)
     holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
+
+    # Only today's date has a meaningful "current period" — on any other day chip every
+    # phase card just opens expanded (see 'open_default' below).
+    is_today_view = day == DAYS[today_idx]
+    now = datetime.datetime.now()
+    current_phase = _current_phase_now(now.time())
 
     membership = request.user.familymembership
     is_parent = membership.role in PARENT_ROLES
@@ -210,6 +230,7 @@ def today(request):
                 'tasks': tasks,
                 'pct': round(done_count / len(checkable) * 100) if checkable else 0,
                 'remaining': len(checkable) - done_count,
+                'open_default': (not is_today_view) or (phase_key == current_phase),
             })
         cards.append({
             'person': person,
