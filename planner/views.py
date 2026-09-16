@@ -7,6 +7,7 @@ from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LoginView
 from django.core.exceptions import PermissionDenied
+from django.db import transaction
 from django.http import JsonResponse
 from django.shortcuts import render, redirect
 from django.utils import timezone
@@ -16,8 +17,8 @@ from django_ratelimit.decorators import ratelimit
 
 from .forms import SignUpForm, RecipeForm
 from .models import (
-    FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem, CustomTask,
-    FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars,
+    Family, FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem,
+    CustomTask, FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars,
 )
 from .task_logic import (
     DAYS, DAY_FULL, tasks_for, next_day, pillar_for, is_zone_b_holiday, DEEP_CLEAN_ROOMS,
@@ -39,8 +40,14 @@ def signup(request):
     if request.method == 'POST':
         form = SignUpForm(request.POST)
         if form.is_valid():
-            user = form.save()
-            FamilyMembership.objects.create(user=user, family=form.matched_family, role=form.cleaned_data['role'])
+            with transaction.atomic():
+                # Lock the family row so two concurrent signups can't both see "no parent
+                # yet" and both get auto-promoted.
+                family = Family.objects.select_for_update().get(pk=form.matched_family.pk)
+                is_first_member = not FamilyMembership.objects.filter(family=family).exists()
+                role = 'maman' if is_first_member else 'enfants'
+                user = form.save()
+                FamilyMembership.objects.create(user=user, family=family, role=role)
             login(request, user)
             return redirect('today')
     else:
@@ -562,6 +569,27 @@ def settings_view(request):
         'settings': settings, 'activities': activities, 'custom_tasks': custom_tasks,
         'days': DAYS, 'day_full': DAY_FULL, 'members': members,
     })
+
+
+@login_required
+@parent_required
+@require_POST
+def promote_member(request, pk):
+    """Grants an existing family member a parent role. Only a current parent can do this —
+    the invite code itself only ever grants the 'enfants' role (see views.signup)."""
+    family = _get_family(request)
+    role = request.POST.get('role', 'maman')
+    if role not in PARENT_ROLES:
+        messages.error(request, "Rôle invalide.")
+        return redirect('settings')
+    membership = FamilyMembership.objects.filter(pk=pk, family=family).first()
+    if membership:
+        membership.role = role
+        membership.save(update_fields=['role'])
+        messages.success(request, "Membre promu au rôle parent.")
+    else:
+        messages.error(request, "Action impossible.")
+    return redirect('settings')
 
 
 @login_required
