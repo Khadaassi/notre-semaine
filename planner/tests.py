@@ -1463,3 +1463,152 @@ class ReassignTaskTests(TestCase):
         })
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(TaskException.objects.filter(kind='reassigned').exists())
+
+
+class WizardEntryTests(TestCase):
+    """wizard_start (Lot 5b): the intro/"Commencer" card and the "Terminé !" recap card are
+    the same view, switched by ?done=1 — and it's parent-only since step 2 of the flow lands
+    on settings_view (parent_required)."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Wiz', invite_code='WIZFAM001')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('wizparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.child = User.objects.create_user('wizchild', password='pass12345')
+        FamilyMembership.objects.create(user=self.child, family=self.family, role='enfants')
+
+    def test_child_cannot_access_wizard_start(self):
+        self.client.force_login(self.child)
+        resp = self.client.get(reverse('wizard_start'))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_parent_sees_intro_card_with_link_to_step_one(self):
+        self.client.force_login(self.parent)
+        resp = self.client.get(reverse('wizard_start'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Commencer')
+        self.assertContains(resp, f"{reverse('week')}?wizard=1&amp;step=1")
+
+    def test_parent_sees_recap_card_when_done(self):
+        self.client.force_login(self.parent)
+        resp = self.client.get(reverse('wizard_start'), {'done': '1'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Semaine prête')
+        self.assertContains(resp, reverse('week'))
+        self.assertContains(resp, reverse('maison'))
+
+
+class WizardBannerDisplayTests(TestCase):
+    """The 4 existing screens (week_view, settings_view, menu, maison) only show the wizard
+    progress banner when ?wizard=1 is on the URL (see views._wizard_banner) — off by default,
+    so nothing changes for a family that never uses the "Préparer notre semaine" entry point."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='WizB', invite_code='WIZBFAM01')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('wizbparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+
+    def test_week_view_has_no_banner_without_wizard_param(self):
+        resp = self.client.get(reverse('week'))
+        self.assertNotContains(resp, 'wizard-banner')
+
+    def test_week_view_step_one_banner_points_to_settings_step_two(self):
+        resp = self.client.get(reverse('week'), {'wizard': '1', 'step': '1'})
+        self.assertContains(resp, 'wizard-banner')
+        self.assertContains(resp, 'Étape 1/4')
+        self.assertContains(resp, f"{reverse('settings')}?wizard=1&amp;step=2")
+
+    def test_settings_view_step_two_banner_points_to_menu_step_three(self):
+        resp = self.client.get(reverse('settings'), {'wizard': '1', 'step': '2'})
+        self.assertContains(resp, 'wizard-banner')
+        self.assertContains(resp, 'Étape 2/4')
+        self.assertContains(resp, f"{reverse('menu')}?wizard=1&amp;step=3")
+
+    def test_menu_step_three_banner_points_to_menu_step_four(self):
+        resp = self.client.get(reverse('menu'), {'wizard': '1', 'step': '3'})
+        self.assertContains(resp, 'wizard-banner')
+        self.assertContains(resp, 'Étape 3/4')
+        self.assertContains(resp, f"{reverse('menu')}?wizard=1&amp;step=4")
+
+    def test_menu_step_four_banner_points_to_maison_step_four(self):
+        resp = self.client.get(reverse('menu'), {'wizard': '1', 'step': '4'})
+        self.assertContains(resp, 'wizard-banner')
+        self.assertContains(resp, 'Étape 4/4')
+        self.assertContains(resp, f"{reverse('maison')}?wizard=1&amp;step=4")
+
+    def test_maison_step_four_is_the_last_step_with_a_finish_button(self):
+        resp = self.client.get(reverse('maison'), {'wizard': '1', 'step': '4'})
+        self.assertContains(resp, 'wizard-banner')
+        self.assertContains(resp, 'Étape 4/4')
+        self.assertContains(resp, 'Terminer le parcours')
+        self.assertNotContains(resp, 'Étape suivante')
+
+    def test_maison_has_no_banner_without_wizard_param(self):
+        resp = self.client.get(reverse('maison'))
+        self.assertNotContains(resp, 'wizard-banner')
+
+
+class WizardCopyToCoursesHandoffTests(TestCase):
+    """Step 4 of the wizard is the existing copy_to_courses action itself (see task brief) —
+    when triggered from inside the flow it hands off straight to 'maison' instead of looping
+    back to 'menu', and normal (non-wizard) usage is unaffected."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='WizC', invite_code='WIZCFAM01')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('wizcparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        recipe = Recipe.objects.create(
+            family=self.family, name='Pâtes', category='Autre',
+            ingredients=[{'name': 'Pâtes', 'quantity': 250, 'unit': 'g'}],
+        )
+        week_start = _monday_of(datetime.date.today())
+        WeeklyMenuEntry.objects.create(family=self.family, week_start=week_start, day='lundi', recipe=recipe)
+
+    def test_copy_to_courses_inside_wizard_redirects_to_maison_step_four(self):
+        resp = self.client.post(
+            f"{reverse('menu')}?wizard=1&step=4", {'copy_to_courses': '1'}
+        )
+        self.assertRedirects(resp, f"{reverse('maison')}?wizard=1&step=4")
+        self.assertTrue(GroceryItem.objects.filter(family=self.family, name='Pâtes').exists())
+
+    def test_copy_to_courses_outside_wizard_still_redirects_to_menu(self):
+        resp = self.client.post(reverse('menu'), {'copy_to_courses': '1'})
+        self.assertRedirects(resp, reverse('menu'))
+
+
+class WizardStepPreservedAcrossSamePageActionsTests(TestCase):
+    """_wizard_redirect: same-page actions (picking a recipe for a day, saving settings...)
+    must not silently drop the wizard out from under the user after their first click —
+    without this, the banner would vanish the moment they did anything on the step."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='WizD', invite_code='WIZDFAM01')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('wizdparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.recipe = Recipe.objects.create(family=self.family, name='Riz cantonais', category='Autre')
+
+    def test_set_day_inside_wizard_redirects_back_with_step_kept(self):
+        resp = self.client.post(f"{reverse('menu')}?wizard=1&step=3", {
+            'set_day': '1', 'day': 'lundi', 'recipe_id': self.recipe.id,
+        })
+        self.assertRedirects(resp, f"{reverse('menu')}?wizard=1&step=3")
+
+    def test_set_day_outside_wizard_redirects_without_wizard_params(self):
+        resp = self.client.post(reverse('menu'), {
+            'set_day': '1', 'day': 'lundi', 'recipe_id': self.recipe.id,
+        })
+        self.assertRedirects(resp, reverse('menu'))
+
+    def test_settings_save_inside_wizard_redirects_back_with_step_kept(self):
+        resp = self.client.post(f"{reverse('settings')}?wizard=1&step=2", {
+            'maman_name': 'Maman', 'nb_enfants': '1', 'fille_name': 'Léa',
+            'tt2_day': 'lundi', 'courses_day': 'samedi',
+        })
+        self.assertRedirects(resp, f"{reverse('settings')}?wizard=1&step=2")
