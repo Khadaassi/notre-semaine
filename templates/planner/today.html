@@ -102,6 +102,7 @@ function updateCardProgress(cardEl) {
     remainingBadge.classList.toggle('done', remaining === 0);
     remainingBadge.textContent = remaining === 0 ? 'Terminé' : `${remaining} restante${remaining > 1 ? 's' : ''}`;
   }
+  cardEl.classList.toggle('phase-complete', remaining === 0);
   return pct;
 }
 

@@ -166,8 +166,10 @@ nav.tabs a .nav-icon{margin-right:6px;}
   margin:16px 0 6px;font-weight:800;}
 .phase-h:first-of-type{margin-top:2px;}
 .kidcard{border-radius:20px;padding:16px 18px;background:white;border:2.5px solid var(--navy);box-shadow:var(--shadow-md);
-  border-top-width:8px;transition:transform .15s ease,box-shadow .15s ease;}
+  border-top-width:8px;transition:transform .15s ease,box-shadow .15s ease,opacity .25s ease,filter .25s ease;}
 @media(hover:hover){.kidcard:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 var(--navy);}}
+.kidcard.phase-complete{opacity:.6;filter:saturate(.5);}
+@media(hover:hover){.kidcard.phase-complete:hover{opacity:.85;filter:saturate(.75);transform:none;box-shadow:var(--shadow-md);}}
 .kidcard .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;
   font-family:var(--font-display);font-weight:700;font-size:18px;gap:8px;}
 .kidcard .head .head-status{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;}

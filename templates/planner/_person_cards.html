@@ -4,7 +4,7 @@
     {% if card.level %}<span class="level-badge"><span class="lvl-star icon-etoile"></span>Niv. {{ card.level }}</span>{% endif %}
   </h2>
   {% for pc in card.phase_cards %}
-  <div class="kidcard {{ card.person }}" data-person="{{ card.person }}" data-phase="{{ pc.phase_key }}">
+  <div class="kidcard {{ card.person }} {% if pc.remaining == 0 %}phase-complete{% endif %}" data-person="{{ card.person }}" data-phase="{{ pc.phase_key }}">
     <div class="head">
       <span><span class="phase-icon icon-{{ pc.phase_key }}"></span>{{ pc.phase_label }}</span>
       <span class="head-status">
