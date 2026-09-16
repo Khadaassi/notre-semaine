@@ -8,8 +8,9 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LoginView
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.http import JsonResponse
+from django.http import Http404, JsonResponse
 from django.shortcuts import render, redirect
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.http import require_POST
@@ -577,6 +578,9 @@ def settings_view(request):
             settings.star_reward_text = request.POST.get('star_reward_text', '').strip()
             settings.save()
             messages.success(request, "Récompense enregistrée.")
+        elif 'regenerate_tablet_token' in request.POST:
+            settings.regenerate_tablet_token()
+            messages.success(request, "Lien tablette régénéré.")
         else:
             settings.maman_name = request.POST.get('maman_name', settings.maman_name).strip() or settings.maman_name
             settings.fille_name = request.POST.get('fille_name', settings.fille_name).strip() or settings.fille_name
@@ -603,9 +607,10 @@ def settings_view(request):
     for c in custom_tasks:
         c.person_name = _person_label(c.person, settings)
     members = FamilyMembership.objects.filter(family=family).select_related('user')
+    tablet_url = request.build_absolute_uri(reverse('tablet', args=[settings.tablet_token])) if settings.tablet_token else ''
     return render(request, 'planner/settings.html', {
         'settings': settings, 'activities': activities, 'custom_tasks': custom_tasks,
-        'days': DAYS, 'day_full': DAY_FULL, 'members': members,
+        'days': DAYS, 'day_full': DAY_FULL, 'members': members, 'tablet_url': tablet_url,
     })
 
 
@@ -660,3 +665,90 @@ def delete_custom_task(request, pk):
     CustomTask.objects.filter(pk=pk, family=_get_family(request)).delete()
     messages.success(request, "Tâche supprimée.")
     return redirect('settings')
+
+
+@ratelimit(key='ip', rate='60/m', method='GET', block=True)
+def tablet_view(request, token):
+    """Read-only, no-login kitchen-tablet display (see FamilySettings.tablet_token). Anyone
+    with the long, unguessable token in the URL can view — but only view: today's cards render
+    with checkable_by_viewer=False (disabled checkboxes, no JS wired up here) so nothing on
+    this page can be edited. Day navigation is a plain `?day=` link, same token-bearing URL."""
+    settings = FamilySettings.objects.select_related('family').filter(tablet_token=token).first() if token else None
+    if not settings:
+        raise Http404("Lien tablette invalide.")
+    family = settings.family
+    _ensure_seed_data(family)
+    activities = list(Activity.objects.filter(family=family))
+    custom_tasks = list(CustomTask.objects.filter(family=family))
+
+    day = request.GET.get('day')
+    today_idx = datetime.date.today().weekday()
+    if day not in DAYS:
+        day = DAYS[today_idx]
+    real_date = datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
+    holiday_today = is_zone_b_holiday(real_date)
+    holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
+
+    people = _family_people(settings)
+    orders = {}
+    for o in TaskOrder.objects.filter(family=family):
+        orders.setdefault(o.person, {})[o.task_id] = o.order
+
+    cards = []
+    for person in people:
+        task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow, custom_tasks)
+        disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
+        task_list = split_by_exceptions(task_list, disabled_ids, not_applicable_ids)
+        completions = {
+            tc.task_id: tc
+            for tc in TaskCompletion.objects.filter(family=family, person=person, date=real_date)
+        }
+        for x in task_list:
+            tc = completions.get(x['id'])
+            x['done'] = tc.done if tc else False
+            x['seconds_spent'] = tc.seconds_spent if tc else 0
+            x['timer_running'] = False
+            x['timer_started_ms'] = None
+        phases = [(pk, pl, apply_order(ts, orders.get(person, {}))) for pk, pl, ts in group_by_phase(task_list)]
+        phase_cards = []
+        for phase_key, phase_label, tasks in phases:
+            checkable = [x for x in tasks if not x['info'] and not x['not_applicable']]
+            done_count = sum(1 for x in checkable if x['done'])
+            phase_cards.append({
+                'phase_key': phase_key,
+                'phase_label': phase_label,
+                'tasks': tasks,
+                'pct': round(done_count / len(checkable) * 100) if checkable else 0,
+                'remaining': len(checkable) - done_count,
+            })
+        cards.append({
+            'person': person,
+            'name': _person_label(person, settings),
+            'phase_cards': phase_cards,
+            'checkable_by_viewer': False,
+            'level': None,
+        })
+
+    day_chips = [{'key': d, 'label': DAY_FULL[d], 'full': DAY_FULL[d],
+                  'is_today': i == today_idx, 'is_selected': d == day}
+                 for i, d in enumerate(DAYS)]
+
+    week_start = _monday_of(datetime.date.today())
+    menu_entry = WeeklyMenuEntry.objects.filter(
+        family=family, week_start=week_start, day=day
+    ).select_related('recipe').first()
+    dinner = menu_entry.recipe if menu_entry else None
+
+    day_idx = DAYS.index(day)
+    upcoming = sorted(
+        activities, key=lambda a: ((DAYS.index(a.day) - day_idx) % 7, a.start_time or datetime.time.max)
+    )[:8]
+    for a in upcoming:
+        a.person_name = _person_label(a.person, settings)
+
+    return render(request, 'planner/tablet.html', {
+        'kid_cards': [c for c in cards if c['person'] in ('fille', 'fils')],
+        'parent_cards': [c for c in cards if c['person'] in ('maman', 'papa')],
+        'day': day, 'day_chips': day_chips, 'real_date': real_date, 'settings': settings,
+        'dinner': dinner, 'upcoming': upcoming,
+    })

@@ -126,6 +126,18 @@
 </div>
 
 <div class="card">
+  <h2>Affichage tablette cuisine</h2>
+  <div class="hint">Un lien en lecture seule, sans connexion, à garder ouvert sur une tablette dans la cuisine.</div>
+  {% if tablet_url %}
+    <div class="pill" style="word-break:break-all;display:block;">{{ tablet_url }}</div>
+  {% endif %}
+  <form method="post" style="margin-top:10px;" onsubmit="return confirm('Régénérer le lien ? L\'ancien lien cessera de fonctionner.');">
+    {% csrf_token %}
+    <button type="submit" name="regenerate_tablet_token" value="1">{% if tablet_url %}Régénérer le lien{% else %}Générer le lien{% endif %}</button>
+  </form>
+</div>
+
+<div class="card">
   <h2>Membres de la famille</h2>
   <div class="hint">Ces comptes ont accès à toutes les données ci-dessus.</div>
   {% for m in members %}

@@ -1,0 +1,63 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="300">
+<title>Notre Semaine — Tablette</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Nunito:wght@500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{% static 'planner/style.css' %}">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="title">
+      <div class="badge">NS</div>
+      <div>
+        <h1>Notre Semaine</h1>
+        <div class="sub">{{ real_date|date:"l j F Y"|capfirst }}</div>
+      </div>
+    </div>
+  </header>
+
+  <div class="dayrow">
+    {% for c in day_chips %}
+      <a class="daychip {% if c.is_selected %}active{% endif %}" href="?day={{ c.key }}">
+        <span class="d">{{ c.label|slice:":3" }}</span>{{ c.full }}
+      </a>
+    {% endfor %}
+  </div>
+
+  <div class="kidgrid">
+    {% include "planner/_person_cards.html" with cards=kid_cards %}
+  </div>
+
+  {% if parent_cards %}
+  <div class="parentgrid">
+    {% include "planner/_person_cards.html" with cards=parent_cards %}
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2><span class="phase-icon icon-repas"></span>Repas du soir</h2>
+    {% if dinner %}
+      <div class="pill">{{ dinner.name }}</div>
+    {% else %}
+      <div class="hint">Pas de repas prévu pour ce jour.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2><span class="phase-icon icon-activite"></span>Prochains événements</h2>
+    {% for a in upcoming %}
+      <div class="pill">{{ a.person_name }} — {{ a.label }} — {{ a.get_day_display }}{% if a.time_range_label %} {{ a.time_range_label }}{% endif %}</div>
+    {% empty %}
+      <div class="hint">Aucun événement à venir.</div>
+    {% endfor %}
+  </div>
+</div>
+</body>
+</html>

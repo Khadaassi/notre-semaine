@@ -1,3 +1,5 @@
+import secrets
+
 from django.conf import settings
 from django.db import models
 
@@ -64,6 +66,9 @@ class FamilySettings(models.Model):
         max_length=200, blank=True, default='',
         help_text="Texte affiché dans le popup de surprise (facultatif — sinon message générique)."
     )
+    # Long, unguessable slug for the unauthenticated read-only kitchen tablet display
+    # (see views.tablet_view) — generated once in `load()`, regenerable from settings.
+    tablet_token = models.CharField(max_length=64, blank=True, default='')
 
     class Meta:
         verbose_name = "Réglages famille"
@@ -75,7 +80,14 @@ class FamilySettings(models.Model):
     @classmethod
     def load(cls, family):
         obj, _ = cls.objects.get_or_create(family=family)
+        if not obj.tablet_token:
+            obj.tablet_token = secrets.token_urlsafe(24)
+            obj.save(update_fields=['tablet_token'])
         return obj
+
+    def regenerate_tablet_token(self):
+        self.tablet_token = secrets.token_urlsafe(24)
+        self.save(update_fields=['tablet_token'])
 
 
 class Activity(models.Model):

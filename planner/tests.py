@@ -237,3 +237,56 @@ class SettingsRewardFormTests(TestCase):
         self.settings.refresh_from_db()
         self.assertEqual(self.settings.star_milestone, 7)
         self.assertEqual(self.settings.star_reward_text, 'Un ciné !')
+
+
+class SettingsTabletTokenFormTests(TestCase):
+    """Covers the new 'Affichage tablette cuisine' form in settings.html: regenerating the
+    kitchen-tablet token — parent-only, like every other settings form."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Test', invite_code='TOKFORM1')
+        self.parent_user = User.objects.create_user('parenttoken', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent_user, family=self.family, role='maman')
+        self.settings = FamilySettings.load(self.family)
+
+    def test_parent_can_regenerate_tablet_token(self):
+        old_token = self.settings.tablet_token
+        self.assertTrue(old_token)
+        self.client.force_login(self.parent_user)
+        resp = self.client.post(reverse('settings'), {'regenerate_tablet_token': '1'})
+        self.assertEqual(resp.status_code, 302)
+        self.settings.refresh_from_db()
+        self.assertTrue(self.settings.tablet_token)
+        self.assertNotEqual(self.settings.tablet_token, old_token)
+
+
+class TabletViewTests(TestCase):
+    """The kitchen-tablet display needs no login, but must refuse an invalid/absent token."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Test', invite_code='TABLETFAM1')
+        self.settings = FamilySettings.load(self.family)
+
+    def test_invalid_token_is_refused(self):
+        resp = self.client.get('/tablette/not-a-real-token/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_missing_token_is_refused(self):
+        resp = self.client.get('/tablette/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_valid_token_renders_without_login(self):
+        url = reverse('tablet', args=[self.settings.tablet_token])
+        resp = self.client.get(url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Repas du soir')
+        self.assertContains(resp, 'Prochains événements')
+        # No JS wiring for checkbox toggling / reordering is shipped on this read-only page.
+        self.assertNotContains(resp, 'toggle-task')
+        self.assertNotContains(resp, 'reorderToggle')
+
+    def test_day_query_param_navigates_without_auth(self):
+        url = reverse('tablet', args=[self.settings.tablet_token])
+        resp = self.client.get(url, {'day': 'mardi'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['day'], 'mardi')

@@ -20,4 +20,5 @@ urlpatterns = [
     path('reglages/membre/<int:pk>/retirer/', views.remove_member, name='remove_member'),
     path('reglages/membre/<int:pk>/promouvoir/', views.promote_member, name='promote_member'),
     path('inscription/', views.signup, name='signup'),
+    path('tablette/<str:token>/', views.tablet_view, name='tablet'),
 ]
