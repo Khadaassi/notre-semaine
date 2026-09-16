@@ -26,16 +26,22 @@
                    class="task-toggle">
             <label for="task-{{ card.person }}-{{ task.id }}">{{ task.label }}</label>
             {% if card.checkable_by_viewer %}
-            <button type="button" class="timerbtn {% if task.timer_running %}running{% endif %}"
-                    data-person="{{ card.person }}" data-task="{{ task.id }}"
-                    data-seconds="{{ task.seconds_spent }}" data-running="{% if task.timer_running %}1{% else %}0{% endif %}"
-                    data-started="{{ task.timer_started_ms|default_if_none:'' }}" aria-label="Minuteur">
-              <span class="row-icon icon-clock"></span><span class="timer-label"></span>
+            <button type="button" class="task-timer-toggle {% if task.timer_running %}running{% endif %}"
+                    data-task-timer-toggle aria-label="Minuteur pour {{ task.label }}" aria-expanded="false">
+              <span class="row-icon icon-clock"></span>
             </button>
             <span class="reorder-btns">
               <button type="button" class="orderbtn" data-dir="up" aria-label="Monter">▲</button>
               <button type="button" class="orderbtn" data-dir="down" aria-label="Descendre">▼</button>
             </span>
+            <div class="task-detail">
+              <button type="button" class="timerbtn {% if task.timer_running %}running{% endif %}"
+                      data-person="{{ card.person }}" data-task="{{ task.id }}"
+                      data-seconds="{{ task.seconds_spent }}" data-running="{% if task.timer_running %}1{% else %}0{% endif %}"
+                      data-started="{{ task.timer_started_ms|default_if_none:'' }}" aria-label="Démarrer ou arrêter le minuteur">
+                <span class="row-icon icon-clock"></span><span class="timer-action"></span><span class="timer-label"></span>
+              </button>
+            </div>
             {% endif %}
           </div>
         {% endif %}

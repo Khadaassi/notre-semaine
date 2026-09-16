@@ -190,7 +190,7 @@ nav.tabs a .nav-icon{margin-right:6px;}
 .fille .progressbar>div{background:var(--coral);} .fils .progressbar>div{background:var(--mint);}
 .maman .progressbar>div{background:var(--plum);} .papa .progressbar>div{background:var(--sun);}
 @keyframes xp-stripes{from{background-position:0 0;}to{background-position:24px 0;}}
-.task{display:flex;align-items:flex-start;gap:12px;padding:9px 4px;border-bottom:2px dashed var(--line);font-size:14.5px;font-weight:700;}
+.task{display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;padding:9px 4px;border-bottom:2px dashed var(--line);font-size:14.5px;font-weight:700;}
 .task:last-child{border-bottom:none;}
 .task.info{color:var(--muted);font-style:italic;font-weight:600;}
 .task label{cursor:pointer;flex:1;transition:color .2s ease;padding-top:2px;}
@@ -218,6 +218,24 @@ nav.tabs a .nav-icon{margin-right:6px;}
 .timerbtn.running{background:var(--coral);color:white;animation:timer-pulse 1.6s ease-in-out infinite;}
 .timerbtn.running:hover{background:var(--coral-dk);color:white;}
 @keyframes timer-pulse{0%,100%{opacity:1;}50%{opacity:.72;}}
+
+/* ---- Minuteur : icône discrète par défaut, détail affiché à la demande ---- */
+.task-timer-toggle{border:none !important;background:transparent;box-shadow:none !important;color:var(--muted);
+  padding:0;width:22px;height:22px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;
+  flex-shrink:0;margin-top:1px;position:relative;cursor:pointer;}
+.task-timer-toggle:hover{background:#f1eeff;color:var(--navy);transform:none;}
+.task-timer-toggle .row-icon{margin-right:0;}
+.task-timer-toggle.running{color:var(--coral);}
+.task-timer-toggle.running::after{content:'';position:absolute;top:1px;right:1px;width:7px;height:7px;
+  border-radius:50%;background:var(--coral);animation:timer-pulse 1.6s ease-in-out infinite;
+  box-shadow:0 0 0 2px white;}
+.task-detail{display:none;flex-basis:100%;margin-top:6px;padding-top:8px;border-top:2px dashed var(--line);}
+.task-detail.open{display:flex;}
+.task-detail .timerbtn{padding:7px 12px;border-radius:10px;background:#f7f5ff;gap:6px;}
+.task-detail .timerbtn:hover{background:#e9e4ff;}
+.task-detail .timerbtn.running{background:var(--coral);color:white;}
+.task-detail .timerbtn.running:hover{background:var(--coral-dk);}
+.task-detail .timer-action{font-weight:800;}
 
 .reorder-btns{display:flex;flex-direction:column;gap:2px;flex-shrink:0;margin-top:1px;}
 .orderbtn{border:none !important;background:transparent;color:var(--muted);padding:0;width:20px;height:14px;

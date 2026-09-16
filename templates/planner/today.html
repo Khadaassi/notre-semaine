@@ -169,6 +169,8 @@ function updateTimerLabel(btn) {
   const started = parseInt(btn.dataset.started || '0', 10);
   const total = running && started ? base + (Date.now() - started) / 1000 : base;
   btn.querySelector('.timer-label').textContent = total > 0 ? formatDuration(total) : '';
+  const action = btn.querySelector('.timer-action');
+  if (action) action.textContent = running ? 'Arrêter' : 'Démarrer';
 }
 
 document.querySelectorAll('.timerbtn').forEach(updateTimerLabel);
@@ -191,9 +193,21 @@ document.querySelectorAll('.timerbtn').forEach(btn => {
         btn.dataset.running = data.running ? '1' : '0';
         btn.dataset.started = data.started_at_ms || '';
         btn.classList.toggle('running', data.running);
+        const toggle = btn.closest('.task').querySelector('.task-timer-toggle');
+        if (toggle) toggle.classList.toggle('running', data.running);
         updateTimerLabel(btn);
       })
       .catch(() => alert("Échec du minuteur, réessayez."));
+  });
+});
+
+/* ---- Détail de la tâche (minuteur affiché à la demande) ---- */
+document.querySelectorAll('[data-task-timer-toggle]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const detail = btn.closest('.task').querySelector('.task-detail');
+    if (!detail) return;
+    const isOpen = detail.classList.toggle('open');
+    btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
   });
 });
 
