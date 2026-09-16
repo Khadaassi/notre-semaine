@@ -158,6 +158,7 @@ def today(request):
                 'phase_label': phase_label,
                 'tasks': tasks,
                 'pct': round(done_count / len(checkable) * 100) if checkable else 0,
+                'remaining': len(checkable) - done_count,
             })
         cards.append({
             'person': person,
