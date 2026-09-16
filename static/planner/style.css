@@ -352,9 +352,17 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
   header.top form{align-self:flex-end;margin-top:-8px;}
   .rotation{flex-direction:column;align-items:flex-start;gap:10px;}
   .rotation form{align-self:flex-end;}
-  nav.tabs{justify-content:space-between;gap:6px;}
-  nav.tabs a{padding:9px 11px;flex:1;justify-content:center;}
+
+  /* Barre de navigation fixée en bas, libellés toujours visibles sous chaque icône
+     (plutôt qu'agrandir la police, la barre passe en icône+libellé empilés). */
+  .wrap{padding-bottom:calc(80px + env(safe-area-inset-bottom));}
+  nav.tabs{position:fixed;left:0;right:0;top:auto;bottom:0;z-index:50;margin:0;
+    padding:6px 6px calc(6px + env(safe-area-inset-bottom));background:var(--card);
+    border-top:2.5px solid var(--navy);border-radius:0;box-shadow:0 -6px 14px rgba(30,27,58,.14);
+    justify-content:space-between;gap:4px;overflow-x:visible;}
+  nav.tabs a{padding:6px 2px;flex:1;min-width:0;flex-direction:column;gap:2px;justify-content:center;}
+  nav.tabs a:not(.active){border-color:transparent;box-shadow:none;}
   nav.tabs a .nav-icon{margin-right:0;}
-  nav.tabs a .nav-label{display:none;font-size:11.5px;}
-  nav.tabs a.active .nav-label{display:inline;margin-left:6px;}
+  nav.tabs a .nav-label{display:block;font-size:9.5px;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis;max-width:100%;margin-left:0;}
 }
