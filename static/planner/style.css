@@ -106,6 +106,7 @@ nav.tabs a .nav-icon{margin-right:6px;}
 .icon-activite{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23000' stroke='none'%3E%3Cpath d='M13 2L3 14h7l-1 8 11-14h-8z'/%3E%3C/svg%3E");}
 .icon-clock{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3.5 2'/%3E%3C/svg%3E");}
 .icon-etoile{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23000' stroke='none'%3E%3Cpath d='M12 2.5l2.9 6 6.6.7-4.9 4.6 1.3 6.5L12 16.9 6.1 20.3l1.3-6.5-4.9-4.6 6.6-.7z'/%3E%3C/svg%3E");}
+.icon-reorder{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 20V8'/%3E%3Cpath d='M5 11l3-3 3 3'/%3E%3Cpath d='M16 4v12'/%3E%3Cpath d='M19 13l-3 3-3-3'/%3E%3C/svg%3E");}
 [class*="icon-"]{-webkit-mask-image:var(--i);mask-image:var(--i);}
 
 .celebrate-overlay{position:fixed;inset:0;z-index:999;display:flex;align-items:center;justify-content:center;
@@ -237,13 +238,19 @@ nav.tabs a .nav-icon{margin-right:6px;}
 .task-detail .timerbtn.running:hover{background:var(--coral-dk);}
 .task-detail .timer-action{font-weight:800;}
 
-.reorder-btns{display:flex;flex-direction:column;gap:2px;flex-shrink:0;margin-top:1px;}
+.reorder-btns{display:none;flex-direction:column;gap:2px;flex-shrink:0;margin-top:1px;}
+[data-reorder-mode] .reorder-btns{display:flex;}
 .orderbtn{border:none !important;background:transparent;color:var(--muted);padding:0;width:20px;height:14px;
   font-size:9px;line-height:1;cursor:pointer;box-shadow:none !important;border-radius:4px;display:flex;
   align-items:center;justify-content:center;}
 .orderbtn:hover{background:#f1eeff;color:var(--navy);transform:none;}
 .orderbtn:disabled{opacity:.25;cursor:default;}
 .orderbtn:disabled:hover{background:transparent;color:var(--muted);}
+
+.today-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
+.reorder-toggle-btn{display:inline-flex;align-items:center;padding:8px 14px;font-size:12.5px;background:white;color:var(--navy);}
+.reorder-toggle-btn .row-icon{margin-right:6px;}
+.reorder-toggle-btn[aria-pressed="true"]{background:var(--plum);color:#fff;}
 
 .starcard .head-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;}
 .starcard .head-row h2{margin:0;}
