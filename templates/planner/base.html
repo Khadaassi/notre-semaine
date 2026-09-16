@@ -13,6 +13,14 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Nunito:wght@500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{% static 'planner/style.css' %}">
+<script>
+(function(){
+  try {
+    var reduced = localStorage.getItem('ns_reduce_motion') === '1';
+    document.documentElement.dataset.reduceMotion = reduced ? '1' : '0';
+  } catch (e) {}
+})();
+</script>
 </head>
 <body>
 <div class="wrap">
@@ -25,9 +33,14 @@
       </div>
     </div>
     {% if user.is_authenticated %}
-      <form method="post" action="{% url 'logout' %}"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
-        <button type="submit" class="logoutbtn"><span class="nav-icon icon-logout"></span>{{ user.username }}</button>
-      </form>
+      <div class="header-actions">
+        <button type="button" id="motionToggle" class="motion-toggle" aria-pressed="false">
+          <span class="nav-icon icon-motion"></span><span class="nav-label">Animations</span>
+        </button>
+        <form method="post" action="{% url 'logout' %}"><input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
+          <button type="submit" class="logoutbtn"><span class="nav-icon icon-logout"></span>{{ user.username }}</button>
+        </form>
+      </div>
     {% endif %}
   </header>
 
@@ -55,6 +68,25 @@
     {% endif %}
   </nav>
   {% endif %}
+
+  <script>
+  (function(){
+    var btn = document.getElementById('motionToggle');
+    if (btn) {
+      btn.setAttribute('aria-pressed', document.documentElement.dataset.reduceMotion === '1' ? 'true' : 'false');
+      btn.addEventListener('click', function(){
+        var next = document.documentElement.dataset.reduceMotion !== '1';
+        document.documentElement.dataset.reduceMotion = next ? '1' : '0';
+        btn.setAttribute('aria-pressed', next ? 'true' : 'false');
+        try { localStorage.setItem('ns_reduce_motion', next ? '1' : '0'); } catch (e) {}
+      });
+    }
+    window.nsPrefersReducedMotion = function(){
+      return document.documentElement.dataset.reduceMotion === '1' ||
+        (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    };
+  })();
+  </script>
 
   {% block content %}{% endblock %}
 </div>

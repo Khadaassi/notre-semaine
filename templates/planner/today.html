@@ -45,6 +45,10 @@ function randomCongrats(person) {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+function reducedMotion() {
+  return !!(window.nsPrefersReducedMotion && window.nsPrefersReducedMotion());
+}
+
 function spawnConfetti(overlay, count, star) {
   for (let i = 0; i < count; i++) {
     const piece = document.createElement('div');
@@ -63,7 +67,7 @@ function celebrate(person) {
   overlay.className = 'celebrate-overlay';
   overlay.innerHTML = `<div class="celebrate-card ${person}"><div class="celebrate-msg"></div></div>`;
   overlay.querySelector('.celebrate-msg').textContent = randomCongrats(person);
-  spawnConfetti(overlay, 28);
+  if (!reducedMotion()) spawnConfetti(overlay, 28);
   document.body.appendChild(overlay);
   const dismiss = () => { overlay.classList.add('fade-out'); setTimeout(() => overlay.remove(), 300); };
   overlay.addEventListener('click', dismiss);
@@ -81,8 +85,7 @@ function celebrateMilestone(person, total) {
       ${total ? `<div class="milestone-count"><span class="star-char">★</span> ${total}</div>` : ''}
     </div>`;
   overlay.querySelector('.celebrate-msg').textContent = MILESTONE_MSG;
-  spawnConfetti(overlay, 45);
-  spawnConfetti(overlay, 18, true);
+  if (!reducedMotion()) { spawnConfetti(overlay, 45); spawnConfetti(overlay, 18, true); }
   document.body.appendChild(overlay);
   const dismiss = () => { overlay.classList.add('fade-out'); setTimeout(() => overlay.remove(), 300); };
   overlay.addEventListener('click', dismiss);
@@ -133,7 +136,7 @@ document.querySelectorAll('.task-toggle').forEach(cb=>{
     cb.closest('.task').classList.toggle('done', wasChecked);
     const pct = updateCardProgress(cardEl);
     if (!wasChecked) celebratedPhase[phaseKey] = false;
-    if (wasChecked) {
+    if (wasChecked && !reducedMotion()) {
       const rect = cb.getBoundingClientRect();
       sparkBurst(rect.left + rect.width / 2, rect.top + rect.height / 2, getComputedStyle(cb).backgroundColor);
     }
