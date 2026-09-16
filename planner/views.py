@@ -199,6 +199,29 @@ def today(request):
             for kid in kids_people
         ]
 
+    # "À venir" — the next not-yet-started Activity today, scoped to the same people the
+    # who-filter above resolved to (so a kid account only ever sees its own upcoming activity,
+    # and a parent's "Moi"/per-kid filter narrows this too). Only meaningful when viewing
+    # today: a future/past day chip has no "next" relative to right now.
+    upcoming_activity = None
+    if is_today_view:
+        candidates = sorted(
+            (a for a in activities
+             if a.day == day and a.person in view_people and a.start_time and a.start_time >= now.time()),
+            key=lambda a: a.start_time,
+        )
+        if candidates:
+            act = candidates[0]
+            upcoming_activity = {
+                'person_name': _person_label(act.person, settings),
+                'label': act.label,
+                'time_range': act.time_range_label(),
+                'accompanied_by_name': _person_label(act.accompanied_by, settings) if act.accompanied_by else '',
+                'picked_up_by_name': _person_label(act.picked_up_by, settings) if act.picked_up_by else '',
+                'location': act.location,
+                'items_to_bring': act.items_to_bring,
+            }
+
     orders = {}
     for o in TaskOrder.objects.filter(family=family):
         orders.setdefault(o.person, {})[o.task_id] = o.order
@@ -252,6 +275,7 @@ def today(request):
         'real_date': real_date, 'settings': settings,
         'kid_unassigned': not is_parent and not membership.kid_person,
         'who_options': who_options, 'who': who,
+        'upcoming_activity': upcoming_activity,
     })
 
 

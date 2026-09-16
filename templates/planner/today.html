@@ -25,6 +25,20 @@
   {% endfor %}
 </div>
 
+{% if upcoming_activity %}
+<div class="home-highlights">
+  <div class="highlight-card upcoming">
+    <h3><span class="row-icon icon-clock"></span>À venir</h3>
+    <div class="hl-main">{{ upcoming_activity.person_name }} — {{ upcoming_activity.label }}</div>
+    {% if upcoming_activity.time_range %}<div class="hl-sub">{{ upcoming_activity.time_range }}</div>{% endif %}
+    {% if upcoming_activity.accompanied_by_name %}<div class="hl-sub">Accompagné(e) par {{ upcoming_activity.accompanied_by_name }}</div>{% endif %}
+    {% if upcoming_activity.picked_up_by_name %}<div class="hl-sub">Récupéré(e) par {{ upcoming_activity.picked_up_by_name }}</div>{% endif %}
+    {% if upcoming_activity.location %}<div class="hl-sub">Lieu : {{ upcoming_activity.location }}</div>{% endif %}
+    {% if upcoming_activity.items_to_bring %}<div class="hl-sub">À apporter : {{ upcoming_activity.items_to_bring }}</div>{% endif %}
+  </div>
+</div>
+{% endif %}
+
 <div class="kidgrid">
   {% include "planner/_person_cards.html" with cards=kid_cards %}
 </div>
