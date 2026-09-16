@@ -58,7 +58,7 @@
 <div class="card">
   <h2>Activités</h2>
   {% for a in activities %}
-    <div class="pill">{{ a.person_name }} — {{ a.label }} — {{ a.get_day_display }}{% if a.time %} {{ a.time }}{% endif %}
+    <div class="pill">{{ a.person_name }} — {{ a.label }} — {{ a.get_day_display }}{% if a.time_range_label %} {{ a.time_range_label }}{% endif %}
       <form method="post" action="{% url 'delete_activity' a.id %}" style="display:inline;" onsubmit="return confirm('Supprimer cette activité ?');">{% csrf_token %}
         <button type="submit" class="delbtn">✕</button>
       </form>
