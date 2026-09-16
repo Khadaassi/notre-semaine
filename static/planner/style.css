@@ -169,7 +169,10 @@ nav.tabs a .nav-icon{margin-right:6px;}
   border-top-width:8px;transition:transform .15s ease,box-shadow .15s ease;}
 @media(hover:hover){.kidcard:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 var(--navy);}}
 .kidcard .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;
-  font-family:var(--font-display);font-weight:700;font-size:18px;}
+  font-family:var(--font-display);font-weight:700;font-size:18px;gap:8px;}
+.kidcard .head .head-status{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;}
+.kidcard .head .remaining-badge{font-family:var(--font-body);font-size:11px;font-weight:800;color:var(--muted);white-space:nowrap;}
+.kidcard .head .remaining-badge.done{color:var(--mint-dk);}
 .kidcard .head .pct-badge{font-family:var(--font-display);font-size:13px;padding:3px 12px;border-radius:999px;
   background:var(--coral);color:white;border:2px solid var(--navy);box-shadow:inset 0 1px 0 rgba(255,255,255,.35);}
 .kidcard.fille{border-top-color:var(--coral);} .kidcard.fils{border-top-color:var(--mint);}

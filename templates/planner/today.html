@@ -94,8 +94,14 @@ function updateCardProgress(cardEl) {
   if (!boxes.length) return 0;
   const done = Array.from(boxes).filter(cb => cb.checked).length;
   const pct = Math.round((done / boxes.length) * 100);
+  const remaining = boxes.length - done;
   cardEl.querySelector('.pct-badge').textContent = pct + '%';
   cardEl.querySelector('.progressbar > div').style.width = pct + '%';
+  const remainingBadge = cardEl.querySelector('.remaining-badge');
+  if (remainingBadge) {
+    remainingBadge.classList.toggle('done', remaining === 0);
+    remainingBadge.textContent = remaining === 0 ? 'Terminé' : `${remaining} restante${remaining > 1 ? 's' : ''}`;
+  }
   return pct;
 }
 
