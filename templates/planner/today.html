@@ -4,6 +4,17 @@
 <div class="flash info">Ce compte n'est pas encore associé à un enfant précis — les tâches sont visibles mais pas
   modifiables. Demande à un parent de faire l'association depuis Réglages → Membres de la famille.</div>
 {% endif %}
+{% if is_parent %}
+<div class="card wizard-entry-card">
+  <div class="wizard-entry-row">
+    <div>
+      <h2 style="margin-bottom:2px;">Préparer notre semaine</h2>
+      <p class="hint" style="margin:0;">Parcours guidé : événements, répartition des tâches, menus, courses.</p>
+    </div>
+    <a href="{% url 'wizard_start' %}" class="wizard-entry-btn">Commencer →</a>
+  </div>
+</div>
+{% endif %}
 <div class="today-toolbar">
   <div class="hint" style="margin:0;">{{ real_date|date:"l j F Y"|capfirst }}</div>
   <div class="toolbar-btns">
