@@ -1,7 +1,16 @@
 {% extends "planner/base.html" %}
 {% block content %}
 <div class="card">
-  <h2>Semainier</h2>
+  <div class="week-nav">
+    <a class="week-nav-btn" href="?week={{ prev_week|date:'Y-m-d' }}" aria-label="Semaine précédente">←</a>
+    <div class="week-nav-label">
+      <h2>Semaine du {{ week_start|date:"j F" }} au {{ week_end|date:"j F Y" }}</h2>
+      {% if not is_current_week %}
+        <a class="week-nav-today" href="?week={{ current_week|date:'Y-m-d' }}">Revenir à la semaine actuelle</a>
+      {% endif %}
+    </div>
+    <a class="week-nav-btn" href="?week={{ next_week|date:'Y-m-d' }}" aria-label="Semaine suivante">→</a>
+  </div>
   <div class="hint">{{ rotation_note }}</div>
   <div style="overflow-x:auto">
     <table class="weekgrid">

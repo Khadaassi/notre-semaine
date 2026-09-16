@@ -295,6 +295,16 @@ nav.tabs a .nav-icon{margin-right:6px;}
 .weekgrid tr:last-child td{border-bottom:none;}
 .weekgrid tr:nth-child(even) td{background:#fbf8ff;}
 .weekgrid .slot{font-weight:800;color:var(--plum);white-space:nowrap;display:flex;align-items:center;}
+
+/* ---- Navigation semaine précédente/suivante (Organisation) ---- */
+.week-nav{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;}
+.week-nav-btn{flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;
+  border-radius:12px;background:white;color:var(--navy);border:2.5px solid var(--navy);font-weight:800;font-size:16px;
+  text-decoration:none;box-shadow:2px 2px 0 var(--navy);transition:transform .08s ease,box-shadow .08s ease,background .1s ease;}
+.week-nav-btn:hover{background:#fff6ea;transform:translate(1px,1px);box-shadow:1px 1px 0 var(--navy);}
+.week-nav-label{flex:1;text-align:center;min-width:0;}
+.week-nav-label h2{margin:0;}
+.week-nav-today{display:inline-block;margin-top:2px;font-size:12px;font-weight:800;color:var(--plum);text-decoration:underline;}
 .rotation{display:flex;align-items:center;justify-content:space-between;background:#fff6ea;
   border-radius:16px;padding:14px 16px;margin-bottom:12px;border:2.5px solid var(--navy);box-shadow:var(--shadow-sm);}
 .rotation .who{font-family:var(--font-display);font-weight:700;color:var(--navy);font-size:15px;}

@@ -9,7 +9,7 @@ from .models import (
     TaskCompletion, TaskException,
 )
 from .task_logic import is_zone_b_holiday, ZONE_B_HOLIDAYS
-from .views import _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day
+from .views import _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _monday_of
 
 
 class ParentRequiredViewsTests(TestCase):
@@ -163,3 +163,45 @@ class SignupRoleTests(TestCase):
         self.assertEqual(resp.status_code, 302)
         membership = FamilyMembership.objects.get(user__username='seconduser')
         self.assertEqual(membership.role, 'enfants')
+
+
+class WeekNavigationTests(TestCase):
+    """week_view defaults to the current calendar week when ?week= is absent (unchanged
+    behavior), and navigates to whichever Monday ?week= points at otherwise — snapping any
+    non-Monday date to its Monday, and falling back to the current week on anything that
+    doesn't parse, rather than erroring."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='NavFam', invite_code='NAVCODE1')
+        FamilySettings.load(self.family)
+        self.user = User.objects.create_user('navuser', password='pass12345')
+        FamilyMembership.objects.create(user=self.user, family=self.family, role='maman')
+        self.client.force_login(self.user)
+
+    def test_default_week_is_current_week(self):
+        resp = self.client.get(reverse('week'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['week_start'], _monday_of(datetime.date.today()))
+        self.assertTrue(resp.context['is_current_week'])
+
+    def test_week_param_navigates_to_requested_monday(self):
+        target_monday = _monday_of(datetime.date.today()) + datetime.timedelta(days=14)
+        resp = self.client.get(reverse('week'), {'week': target_monday.isoformat()})
+        self.assertEqual(resp.context['week_start'], target_monday)
+        self.assertFalse(resp.context['is_current_week'])
+
+    def test_non_monday_week_param_snaps_to_its_monday(self):
+        wednesday_next_week = _monday_of(datetime.date.today()) + datetime.timedelta(days=9)
+        resp = self.client.get(reverse('week'), {'week': wednesday_next_week.isoformat()})
+        self.assertEqual(resp.context['week_start'], _monday_of(wednesday_next_week))
+
+    def test_invalid_week_param_falls_back_to_current_week(self):
+        resp = self.client.get(reverse('week'), {'week': 'not-a-date'})
+        self.assertEqual(resp.context['week_start'], _monday_of(datetime.date.today()))
+
+    def test_prev_next_links_point_to_adjacent_mondays(self):
+        resp = self.client.get(reverse('week'))
+        prev_iso = resp.context['prev_week'].isoformat()
+        next_iso = resp.context['next_week'].isoformat()
+        self.assertContains(resp, f'?week={prev_iso}')
+        self.assertContains(resp, f'?week={next_iso}')

@@ -362,6 +362,20 @@ MENAGE_SHORT_LABELS = {
 }
 
 
+def _week_start_from_request(request):
+    """Resolves the Monday to display from ?week=YYYY-MM-DD (either param may be absent or
+    invalid, in which case today's week is used — this keeps week_view's default behavior
+    unchanged when no navigation has happened yet)."""
+    today_monday = _monday_of(datetime.date.today())
+    week_param = request.GET.get('week')
+    if week_param:
+        try:
+            return _monday_of(datetime.date.fromisoformat(week_param))
+        except ValueError:
+            pass
+    return today_monday
+
+
 @login_required
 def week_view(request):
     family = _get_family(request)
@@ -370,7 +384,8 @@ def week_view(request):
     activities = list(Activity.objects.filter(family=family))
     people = _family_people(settings)
 
-    week_start = _monday_of(datetime.date.today())
+    week_start = _week_start_from_request(request)
+    today_monday = _monday_of(datetime.date.today())
     menu_by_day = {e.day: e.recipe for e in
                    WeeklyMenuEntry.objects.filter(family=family, week_start=week_start).select_related('recipe')}
 
@@ -413,6 +428,10 @@ def week_view(request):
 
     return render(request, 'planner/week.html', {
         'day_headers': day_headers, 'table_rows': table_rows, 'rotation_note': rotation_note,
+        'week_start': week_start, 'week_end': week_start + datetime.timedelta(days=6),
+        'prev_week': week_start - datetime.timedelta(days=7),
+        'next_week': week_start + datetime.timedelta(days=7),
+        'is_current_week': week_start == today_monday, 'current_week': today_monday,
     })
 
 
