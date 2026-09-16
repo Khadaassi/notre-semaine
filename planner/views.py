@@ -104,9 +104,12 @@ def _person_label(person, settings):
     }[person]
 
 
+def _kids_people(settings):
+    return ['fille'] if settings.nb_enfants == 1 else ['fille', 'fils']
+
+
 def _family_people(settings):
-    kids = ['fille'] if settings.nb_enfants == 1 else ['fille', 'fils']
-    return kids + ['maman', 'papa']
+    return _kids_people(settings) + ['maman', 'papa']
 
 
 @login_required
@@ -606,6 +609,30 @@ def promote_member(request, pk):
         messages.success(request, "Membre promu au rôle parent.")
     else:
         messages.error(request, "Action impossible.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+@require_POST
+def set_member_kid(request, pk):
+    """A parent assigns (or clears) which kid a shared 'enfants' account represents — see
+    FamilyMembership.kid_person. This is the only way that field gets set; there's no
+    self-service option since a kid account shouldn't be able to grant itself another kid's
+    tasks. Only affects members with role='enfants' — a no-op (silently ignored, same as
+    promote_member on a bad pk) on anyone else."""
+    family = _get_family(request)
+    settings = FamilySettings.load(family)
+    kid_person = request.POST.get('kid_person', '')
+    membership = FamilyMembership.objects.filter(pk=pk, family=family, role='enfants').first()
+    if not membership:
+        messages.error(request, "Action impossible.")
+    elif kid_person and kid_person not in _kids_people(settings):
+        messages.error(request, "Enfant invalide.")
+    else:
+        membership.kid_person = kid_person
+        membership.save(update_fields=['kid_person'])
+        messages.success(request, "Compte associé à un enfant." if kid_person else "Association retirée.")
     return redirect('settings')
 
 

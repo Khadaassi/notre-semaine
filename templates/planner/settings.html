@@ -110,9 +110,26 @@
 
 <div class="card">
   <h2>Membres de la famille</h2>
-  <div class="hint">Ces comptes ont accès à toutes les données ci-dessus.</div>
+  <div class="hint">Ces comptes ont accès à toutes les données ci-dessus. Un compte "Enfants" doit être associé à un
+    enfant précis pour pouvoir cocher/chronométrer/réordonner ses tâches — tant qu'il ne l'est pas, il reste en
+    lecture seule sur "Aujourd'hui".</div>
   {% for m in members %}
-    <div class="pill">{{ m.user.username }} — {{ m.get_role_display }}{% if m.user == request.user %} (vous){% endif %}
+    <div class="pill">{{ m.user.username }} — {{ m.get_role_display }}
+      {% if m.role == 'enfants' %}
+        ({% if m.kid_person %}{{ m.get_kid_person_display }}{% else %}non associé{% endif %})
+      {% endif %}
+      {% if m.user == request.user %} (vous){% endif %}
+      {% if m.role == 'enfants' %}
+        <form method="post" action="{% url 'set_member_kid' m.id %}" style="display:inline;">{% csrf_token %}
+          <select name="kid_person" onchange="this.form.submit()" aria-label="Associer {{ m.user.username }} à">
+            <option value="">— Aucun —</option>
+            <option value="fille" {% if m.kid_person == 'fille' %}selected{% endif %}>{{ settings.fille_name }}</option>
+            {% if settings.nb_enfants == 2 %}
+              <option value="fils" {% if m.kid_person == 'fils' %}selected{% endif %}>{{ settings.fils_name }}</option>
+            {% endif %}
+          </select>
+        </form>
+      {% endif %}
       {% if m.user != request.user %}
         <form method="post" action="{% url 'remove_member' m.id %}" style="display:inline;" onsubmit="return confirm('Retirer {{ m.user.username }} de la famille ?');">{% csrf_token %}
           <button type="submit" class="delbtn">✕</button>
