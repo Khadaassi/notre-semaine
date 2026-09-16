@@ -308,6 +308,17 @@ nav.tabs a .nav-icon{margin-right:6px;}
 
 .week-duplicate-form{margin-bottom:16px;}
 .duplicate-btn{background:var(--mint-dk);font-size:12.5px;padding:9px 16px;}
+
+/* ---- Agenda vertical (mobile) : même contenu que le tableau, présenté jour par jour ---- */
+.week-agenda{display:none;}
+.agenda-day{border:2.5px solid var(--navy);border-radius:16px;padding:12px 14px;margin-bottom:12px;background:white;
+  box-shadow:var(--shadow-sm);}
+.agenda-day:last-child{margin-bottom:0;}
+.agenda-day-title{font-size:14px;margin:0 0 8px;color:var(--navy);text-transform:uppercase;letter-spacing:.03em;}
+.agenda-row{display:flex;gap:10px;padding:7px 0;border-bottom:2px dashed var(--line);font-size:13.5px;font-weight:700;}
+.agenda-row:last-child{border-bottom:none;}
+.agenda-row-slot{flex-shrink:0;width:88px;font-weight:800;color:var(--plum);display:flex;align-items:center;}
+.agenda-row-content{flex:1;min-width:0;line-height:1.5;}
 .rotation{display:flex;align-items:center;justify-content:space-between;background:#fff6ea;
   border-radius:16px;padding:14px 16px;margin-bottom:12px;border:2.5px solid var(--navy);box-shadow:var(--shadow-sm);}
 .rotation .who{font-family:var(--font-display);font-weight:700;color:var(--navy);font-size:15px;}
@@ -398,4 +409,10 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
   nav.tabs a .nav-icon{margin-right:0;}
   nav.tabs a .nav-label{display:block;font-size:9.5px;white-space:nowrap;overflow:hidden;
     text-overflow:ellipsis;max-width:100%;margin-left:0;}
+
+  /* Semainier : agenda vertical par jour plutôt que le tableau horizontal (illisible en
+     dessous de ~640px) — même contexte de template, juste une seconde présentation. */
+  .week-desktop{display:none;}
+  .week-agenda{display:block;}
+  .week-nav-label h2{font-size:15px;}
 }
