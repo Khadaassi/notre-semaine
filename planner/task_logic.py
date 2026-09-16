@@ -125,6 +125,19 @@ def apply_order(tasks, order_map):
     return [task for idx, task in sorted(enumerate(tasks), key=sort_key)]
 
 
+def split_by_exceptions(tasks, disabled_ids, not_applicable_ids):
+    """Applies TaskException overrides to a generated task list: 'disabled' tasks are
+    dropped entirely, 'not applicable' tasks are kept (still visible) but flagged so the
+    completion/star calculation (see views._checkable_ids_for) can exclude them without
+    counting them as undone."""
+    result = []
+    for task in tasks:
+        if task['id'] in disabled_ids:
+            continue
+        result.append(dict(task, not_applicable=task['id'] in not_applicable_ids))
+    return result
+
+
 def pillar_for(task_id, period):
     """Classifies a task into one of the 4 organizing pillars (+ 'journee' for context/
     school/work info that doesn't belong to a routine or a chore)."""

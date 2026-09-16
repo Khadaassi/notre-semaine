@@ -207,6 +207,37 @@ class CustomTask(models.Model):
         return f"{self.get_person_display()} — {self.label} ({self.get_day_display()})"
 
 
+TASK_EXCEPTION_KIND_CHOICES = [
+    ('disabled_once', 'Désactivée pour ce jour'),
+    ('disabled_from', 'Désactivée à partir de cette date'),
+    ('not_applicable', "Non applicable ce jour (n'affecte pas le taux de complétion)"),
+]
+
+
+class TaskException(models.Model):
+    """An override on a generated (task_logic) or custom task, keyed by its task_id — lets
+    a parent skip a task for one day, suspend it indefinitely, or mark a day where it
+    doesn't apply without that counting against completion/star eligibility. See
+    task_logic.split_by_exceptions for how this is applied; no management UI yet (routines-v2)."""
+    family = models.ForeignKey(Family, on_delete=models.CASCADE)
+    person = models.CharField(max_length=10, choices=PERSON_CHOICES)
+    task_id = models.CharField(max_length=60)
+    kind = models.CharField(max_length=20, choices=TASK_EXCEPTION_KIND_CHOICES)
+    # For 'disabled_once' / 'not_applicable': the exact date it applies to.
+    # For 'disabled_from': the date from which the task is suspended (inclusive).
+    date = models.DateField()
+    # Lets a 'disabled_from' suspension be explicitly reactivated (turned back on) without
+    # deleting the historical row — flip to False to reactivate.
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['family', 'person', 'task_id'])]
+
+    def __str__(self):
+        return f"{self.person} {self.task_id} {self.kind} {self.date}"
+
+
 class GroceryItem(models.Model):
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     name = models.CharField(max_length=150)

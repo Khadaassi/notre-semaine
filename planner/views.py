@@ -18,11 +18,11 @@ from django_ratelimit.decorators import ratelimit
 from .forms import SignUpForm, RecipeForm
 from .models import (
     Family, FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem,
-    CustomTask, FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars,
+    CustomTask, FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars, TaskException,
 )
 from .task_logic import (
     DAYS, DAY_FULL, tasks_for, next_day, pillar_for, is_zone_b_holiday, DEEP_CLEAN_ROOMS,
-    group_by_phase, apply_order, parse_free_time,
+    group_by_phase, apply_order, parse_free_time, split_by_exceptions,
 )
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
 
@@ -138,6 +138,8 @@ def today(request):
     cards = []
     for person in people:
         task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow, custom_tasks)
+        disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
+        task_list = split_by_exceptions(task_list, disabled_ids, not_applicable_ids)
         completions = {
             tc.task_id: tc
             for tc in TaskCompletion.objects.filter(family=family, person=person, date=real_date)
@@ -151,7 +153,7 @@ def today(request):
         phases = [(pk, pl, apply_order(ts, orders.get(person, {}))) for pk, pl, ts in group_by_phase(task_list)]
         phase_cards = []
         for phase_key, phase_label, tasks in phases:
-            checkable = [x for x in tasks if not x['info']]
+            checkable = [x for x in tasks if not x['info'] and not x['not_applicable']]
             done_count = sum(1 for x in checkable if x['done'])
             phase_cards.append({
                 'phase_key': phase_key,
@@ -180,6 +182,20 @@ def today(request):
     })
 
 
+def _exception_id_sets(family, person, date):
+    """Splits a person's active TaskException rows for a given date into (disabled_ids,
+    not_applicable_ids) — see task_logic.split_by_exceptions for how these are applied."""
+    disabled_ids, not_applicable_ids = set(), set()
+    for exc in TaskException.objects.filter(family=family, person=person, active=True):
+        if exc.kind == 'disabled_once' and exc.date == date:
+            disabled_ids.add(exc.task_id)
+        elif exc.kind == 'disabled_from' and exc.date <= date:
+            disabled_ids.add(exc.task_id)
+        elif exc.kind == 'not_applicable' and exc.date == date:
+            not_applicable_ids.add(exc.task_id)
+    return disabled_ids, not_applicable_ids
+
+
 def _checkable_ids_for(person, day, family):
     settings = FamilySettings.load(family)
     activities = list(Activity.objects.filter(family=family))
@@ -188,7 +204,9 @@ def _checkable_ids_for(person, day, family):
     holiday_today = is_zone_b_holiday(real_date)
     holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
     task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow, custom_tasks)
-    return {x['id'] for x in task_list if not x['info']}
+    disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
+    task_list = split_by_exceptions(task_list, disabled_ids, not_applicable_ids)
+    return {x['id'] for x in task_list if not x['info'] and not x['not_applicable']}
 
 
 def _award_star_if_day_complete(family, person, day, real_date):
