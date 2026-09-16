@@ -148,12 +148,36 @@ def today(request):
     # parent's. Until it's assigned, it falls back to read-only access to every kid's card
     # (see checkable_by_viewer below) rather than an empty or broken page — a parent assigns
     # it from the member list in Réglages (settings_view / set_member_kid).
+    kids_people = _kids_people(settings)
     if is_parent:
         view_people = _family_people(settings)
     elif membership.kid_person:
         view_people = [membership.kid_person]
     else:
-        view_people = _kids_people(settings)
+        view_people = kids_people
+
+    # "Toute la famille / Moi / chaque enfant" selector (?who=), parent-only: an 'enfants'
+    # account already only ever sees the single card view_people resolved to above, so there's
+    # nothing left for it to filter — the selector isn't offered to it (who_options stays None,
+    # see today.html). "Moi" maps to the viewer's own person: their role for a parent
+    # (role is literally 'maman'/'papa', the same string as the person key).
+    who_options, who = None, None
+    if is_parent:
+        who = request.GET.get('who', 'all')
+        valid_who = {'all', 'me'} | set(kids_people)
+        if who not in valid_who:
+            who = 'all'
+        if who == 'me':
+            view_people = [membership.role]
+        elif who != 'all':
+            view_people = [who]
+        who_options = [
+            {'key': 'all', 'label': 'Toute la famille', 'selected': who == 'all'},
+            {'key': 'me', 'label': 'Moi', 'selected': who == 'me'},
+        ] + [
+            {'key': kid, 'label': _person_label(kid, settings), 'selected': who == kid}
+            for kid in kids_people
+        ]
 
     orders = {}
     for o in TaskOrder.objects.filter(family=family):
@@ -206,6 +230,7 @@ def today(request):
         'kid_cards': kid_cards, 'parent_cards': parent_cards, 'day': day, 'day_chips': day_chips,
         'real_date': real_date, 'settings': settings,
         'kid_unassigned': not is_parent and not membership.kid_person,
+        'who_options': who_options, 'who': who,
     })
 
 
