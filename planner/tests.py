@@ -230,6 +230,60 @@ class ConfigurableStarMilestoneTests(TestCase):
         self.assertEqual(_level_for(18, self.settings.star_milestone), 2)
 
 
+class StarsTrackerGridTests(TestCase):
+    """The Étoiles grid fills in the order completed days actually happened, one cell per
+    star earned this cycle — not a fixed calendar window with gaps for missed days."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Test', invite_code='GRIDTEST1')
+        self.settings = FamilySettings.load(self.family)
+        self.settings.star_milestone = 5
+        self.settings.save()
+        self.parent = User.objects.create_user('gridparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.day = 'lundi'
+        self.person = 'fille'
+        self.checkable_ids = _checkable_ids_for(self.person, self.day, self.family)
+
+    def _complete_day(self, real_date):
+        for task_id in self.checkable_ids:
+            TaskCompletion.objects.update_or_create(
+                family=self.family, person=self.person, date=real_date, task_id=task_id,
+                defaults={'done': True},
+            )
+        return _award_star_if_day_complete(self.family, self.person, self.day, real_date)
+
+    def _fille_tracker(self):
+        self.client.force_login(self.parent)
+        resp = self.client.get(reverse('stars'))
+        return next(t for t in resp.context['trackers'] if t['person'] == 'fille')
+
+    def test_fresh_cycle_has_no_filled_cells(self):
+        tracker = self._fille_tracker()
+        self.assertEqual(len(tracker['days']), 5)
+        self.assertFalse(any(d['filled'] for d in tracker['days']))
+
+    def test_cells_fill_in_completion_order_skipping_a_missed_day(self):
+        base = _real_date_for_day(self.day)
+        day1, day3, day5 = base, base + datetime.timedelta(days=2), base + datetime.timedelta(days=4)
+        # day2 (base+1) is deliberately never completed — a missed day.
+        self._complete_day(day1)
+        self._complete_day(day3)
+        self._complete_day(day5)
+
+        tracker = self._fille_tracker()
+        filled = [d for d in tracker['days'] if d['filled']]
+        self.assertEqual([d['date'] for d in filled], [day1, day3, day5])
+        # The 3 filled cells are the first 3 in the grid — no empty gap for the missed day.
+        self.assertEqual([d['filled'] for d in tracker['days']], [True, True, True, False, False])
+
+    def test_grid_length_matches_family_milestone(self):
+        self.settings.star_milestone = 8
+        self.settings.save()
+        tracker = self._fille_tracker()
+        self.assertEqual(len(tracker['days']), 8)
+
+
 class SettingsRewardFormTests(TestCase):
     """Covers the new 'Récompenses' form in settings.html: updating the reward
     threshold/text — parent-only, like every other settings form."""

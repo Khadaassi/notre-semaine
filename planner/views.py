@@ -510,28 +510,37 @@ def stars_view(request):
     milestone = max(1, settings.star_milestone)
     kids = [p for p in _family_people(settings) if p in ('fille', 'fils')]
     today = datetime.date.today()
-    days = [today - datetime.timedelta(days=i) for i in range(27, -1, -1)]
 
     trackers = []
     for kid in kids:
         stars, _ = KidStars.objects.get_or_create(family=family, person=kid)
-        awarded_dates = set(StarAward.objects.filter(
-            family=family, person=kid, date__gte=days[0]
-        ).values_list('date', flat=True))
+        all_dates = list(StarAward.objects.filter(family=family, person=kid).order_by('date')
+                          .values_list('date', flat=True))
+        awarded_dates = set(all_dates)
         streak = 0
         cursor = today
         while cursor in awarded_dates:
             streak += 1
             cursor -= datetime.timedelta(days=1)
+
+        in_cycle = stars.total % milestone
+        # The grid is this cycle's progress toward the next surprise: one cell per completed
+        # day since the last milestone, filled in the order they actually happened — not a
+        # fixed calendar window, so a day the kid missed never leaves a permanent gap and a
+        # day completed out of calendar order still just fills the next cell in line.
+        current_cycle_dates = all_dates[-in_cycle:] if in_cycle else []
+        cells = [{'date': d, 'filled': True} for d in current_cycle_dates]
+        cells += [{'date': None, 'filled': False}] * (milestone - len(cells))
+
         trackers.append({
             'person': kid,
             'name': _person_label(kid, settings),
             'total': stars.total,
             'level': _level_for(stars.total, milestone),
-            'in_cycle': stars.total % milestone,
+            'in_cycle': in_cycle,
             'milestone': milestone,
             'streak': streak,
-            'days': [{'date': d, 'filled': d in awarded_dates, 'is_today': d == today} for d in days],
+            'days': cells,
         })
 
     return render(request, 'planner/stars.html', {'trackers': trackers})

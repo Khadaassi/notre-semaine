@@ -17,8 +17,11 @@
   </div>
   <div class="streakgrid">
     {% for d in t.days %}
-      <span class="streakday {{ t.person }} {% if d.filled %}filled{% endif %} {% if d.is_today %}today{% endif %}"
-            title="{{ d.date|date:'l j F' }}{% if d.filled %} — journée complétée{% endif %}"></span>
+      {% if d.filled %}
+        <span class="streakday {{ t.person }} filled" title="{{ d.date|date:'l j F' }} — journée complétée"></span>
+      {% else %}
+        <span class="streakday" title="Pas encore complétée"></span>
+      {% endif %}
     {% endfor %}
   </div>
 </div>
