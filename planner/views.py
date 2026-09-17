@@ -85,14 +85,12 @@ def parent_required(view_func):
 
 def _can_act_on(request, person):
     """True if the signed-in account may check off / time / reorder a task belonging to
-    `person`. A parent may act on anyone. An 'enfants' account may act only on the one kid
-    a parent has assigned it to via FamilyMembership.kid_person — never a sibling's tasks,
-    and never before it's been assigned (see views.today for the matching read-only fallback
-    on the page itself, and settings_view for how a parent assigns it)."""
+    `person`. A parent may act on anyone. The 'enfants' account is shared by every kid in the
+    family — they're on the same screen doing tasks together — so it may act on any kid."""
     membership = request.user.familymembership
     if membership.role in PARENT_ROLES:
         return True
-    return bool(membership.kid_person) and person == membership.kid_person
+    return person in ('fille', 'fils')
 
 
 def _monday_of(d):
@@ -207,24 +205,16 @@ def today(request):
 
     membership = request.user.familymembership
     is_parent = membership.role in PARENT_ROLES
-    # An 'enfants' account only ever gets to see/act on the one kid_person a parent has
-    # assigned it to (FamilyMembership.kid_person) — never a sibling's tasks, and never a
-    # parent's. Until it's assigned, it falls back to read-only access to every kid's card
-    # (see checkable_by_viewer below) rather than an empty or broken page — a parent assigns
-    # it from the member list in Réglages (settings_view / set_member_kid).
+    # The 'enfants' account is shared by every kid in the family — they're together on one
+    # screen doing tasks at the same time — so it always sees and can act on every kid's card.
     kids_people = _kids_people(settings)
-    if is_parent:
-        view_people = _family_people(settings)
-    elif membership.kid_person:
-        view_people = [membership.kid_person]
-    else:
-        view_people = kids_people
+    view_people = _family_people(settings) if is_parent else kids_people
 
     # "Toute la famille / Moi / chaque enfant" selector (?who=), parent-only: an 'enfants'
-    # account already only ever sees the single card view_people resolved to above, so there's
-    # nothing left for it to filter — the selector isn't offered to it (who_options stays None,
-    # see today.html). "Moi" maps to the viewer's own person: their role for a parent
-    # (role is literally 'maman'/'papa', the same string as the person key).
+    # account already sees every kid via view_people above and has no single "me" to narrow
+    # to, so the selector isn't offered to it (who_options stays None, see today.html). "Moi"
+    # maps to the viewer's own person: their role for a parent (role is literally
+    # 'maman'/'papa', the same string as the person key).
     who_options, who = None, None
     if is_parent:
         who = request.GET.get('who', 'all')
@@ -318,7 +308,7 @@ def today(request):
             'person': person,
             'name': _person_label(person, settings),
             'phase_cards': phase_cards,
-            'checkable_by_viewer': is_parent or person == membership.kid_person,
+            'checkable_by_viewer': is_parent or person in ('fille', 'fils'),
             'level': levels.get(person, 1) if person in ('fille', 'fils') else None,
             'day_mode': day_mode,
             'other_people': [(p, _person_label(p, settings)) for p in all_people if p != person],
@@ -334,7 +324,6 @@ def today(request):
     return render(request, 'planner/today.html', {
         'kid_cards': kid_cards, 'parent_cards': parent_cards, 'day': day, 'day_chips': day_chips,
         'real_date': real_date, 'settings': settings, 'is_parent': is_parent,
-        'kid_unassigned': not is_parent and not membership.kid_person,
         'who_options': who_options, 'who': who,
         'upcoming_activity': upcoming_activity, 'tomorrow_prep': tomorrow_prep,
         'tonight_recipe': tonight_recipe, 'day_mode_choices': DAY_MODE_CHOICES,
@@ -1058,30 +1047,6 @@ def promote_member(request, pk):
         messages.success(request, "Membre promu au rôle parent.")
     else:
         messages.error(request, "Action impossible.")
-    return redirect('settings')
-
-
-@login_required
-@parent_required
-@require_POST
-def set_member_kid(request, pk):
-    """A parent assigns (or clears) which kid a shared 'enfants' account represents — see
-    FamilyMembership.kid_person. This is the only way that field gets set; there's no
-    self-service option since a kid account shouldn't be able to grant itself another kid's
-    tasks. Only affects members with role='enfants' — a no-op (silently ignored, same as
-    promote_member on a bad pk) on anyone else."""
-    family = _get_family(request)
-    settings = FamilySettings.load(family)
-    kid_person = request.POST.get('kid_person', '')
-    membership = FamilyMembership.objects.filter(pk=pk, family=family, role='enfants').first()
-    if not membership:
-        messages.error(request, "Action impossible.")
-    elif kid_person and kid_person not in _kids_people(settings):
-        messages.error(request, "Enfant invalide.")
-    else:
-        membership.kid_person = kid_person
-        membership.save(update_fields=['kid_person'])
-        messages.success(request, "Compte associé à un enfant." if kid_person else "Association retirée.")
     return redirect('settings')
 
 

@@ -35,14 +35,6 @@ class FamilyMembership(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     family = models.ForeignKey(Family, on_delete=models.CASCADE, related_name='members')
     role = models.CharField(max_length=10, choices=MEMBER_ROLE_CHOICES, default='enfants')
-    # Which of the family's kid slots this shared 'enfants' account represents — blank until a
-    # parent assigns it from the member list in Réglages (see views.set_member_kid). Ignored for
-    # parent accounts. Drives both permission checks (views._can_act_on: an 'enfants' account may
-    # only check/time/reorder tasks for this person, and sees only this person's card on
-    # 'Aujourd'hui' — see views.today) and the "Moi" filter. While blank, the account falls back
-    # to read-only access to every kid's card rather than being denied outright, so a freshly
-    # signed-up kid account isn't broken before a parent assigns it.
-    kid_person = models.CharField(max_length=10, choices=PERSON_CHOICES, blank=True, default='')
 
     def __str__(self):
         return f"{self.user} → {self.family} ({self.role})"

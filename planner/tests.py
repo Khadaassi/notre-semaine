@@ -614,31 +614,18 @@ class RecipeFavoriteTests(TestCase):
         self.assertIn('Recette C', display_names)
         self.assertNotIn('Recette D', display_names)
 
-class KidPersonFieldTests(TestCase):
-    def test_default_is_blank(self):
-        family = Family.objects.create(name='F', invite_code='FIELDT01')
-        user = User.objects.create_user('fielduser', password='pass12345')
-        membership = FamilyMembership.objects.create(user=user, family=family, role='enfants')
-        self.assertEqual(membership.kid_person, '')
-
-
-class KidPersonPermissionTests(TestCase):
-    """Security-sensitive: an 'enfants' account must only ever be able to see/check/time/
-    reorder the one kid (kid_person) a parent assigned it to — never a sibling's tasks, and
-    (until it's assigned) nothing at all rather than defaulting to full access or crashing.
-    This is the bug fix at the heart of Lot 1 point 6."""
+class SharedKidAccountTests(TestCase):
+    """The 'enfants' account is shared by every kid in the family — they're together on one
+    screen doing tasks at the same time — so it must be able to see and act on every kid's
+    card, never restricted to just one."""
 
     def setUp(self):
         self.family = Family.objects.create(name='KidPerm', invite_code='KIDPERM1')
         FamilySettings.load(self.family)
         self.parent = User.objects.create_user('kpparent', password='pass12345')
         FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
-        self.fille_user = User.objects.create_user('kpfille', password='pass12345')
-        self.fille_membership = FamilyMembership.objects.create(
-            user=self.fille_user, family=self.family, role='enfants', kid_person='fille'
-        )
-        self.unassigned_user = User.objects.create_user('kpunassigned', password='pass12345')
-        FamilyMembership.objects.create(user=self.unassigned_user, family=self.family, role='enfants')
+        self.kid_user = User.objects.create_user('kpkid', password='pass12345')
+        FamilyMembership.objects.create(user=self.kid_user, family=self.family, role='enfants')
         self.day = 'lundi'
 
     def _toggle(self, user, person, task_id='reveil'):
@@ -647,137 +634,51 @@ class KidPersonPermissionTests(TestCase):
             'person': person, 'task_id': task_id, 'day': self.day, 'done': '1',
         })
 
-    def test_assigned_kid_can_toggle_own_task(self):
-        resp = self._toggle(self.fille_user, 'fille')
-        self.assertEqual(resp.status_code, 200)
+    def test_shared_kid_account_can_toggle_either_kids_task(self):
+        self.assertEqual(self._toggle(self.kid_user, 'fille').status_code, 200)
+        self.assertEqual(self._toggle(self.kid_user, 'fils').status_code, 200)
 
-    def test_assigned_kid_cannot_toggle_sibling_task(self):
-        resp = self._toggle(self.fille_user, 'fils')
+    def test_shared_kid_account_cannot_toggle_a_parents_task(self):
+        resp = self._toggle(self.kid_user, 'maman')
         self.assertEqual(resp.status_code, 403)
         self.assertFalse(
-            TaskCompletion.objects.filter(family=self.family, person='fils', task_id='reveil').exists()
+            TaskCompletion.objects.filter(family=self.family, person='maman', task_id='reveil').exists()
         )
-
-    def test_unassigned_kid_cannot_toggle_anyone(self):
-        self.assertEqual(self._toggle(self.unassigned_user, 'fille').status_code, 403)
-        self.assertEqual(self._toggle(self.unassigned_user, 'fils').status_code, 403)
 
     def test_parent_can_toggle_any_person(self):
         for person in ('fille', 'fils', 'maman', 'papa'):
             self.assertEqual(self._toggle(self.parent, person).status_code, 200, person)
 
-    def test_assigned_kid_can_time_own_task_only(self):
-        self.client.force_login(self.fille_user)
-        own = self.client.post(reverse('timer_task'), {
-            'person': 'fille', 'task_id': 'reveil', 'day': self.day, 'action': 'start',
-        })
-        self.assertEqual(own.status_code, 200)
-        self.client.force_login(self.fille_user)
-        sibling = self.client.post(reverse('timer_task'), {
-            'person': 'fils', 'task_id': 'reveil', 'day': self.day, 'action': 'start',
-        })
-        self.assertEqual(sibling.status_code, 403)
+    def test_shared_kid_account_can_time_either_kids_task(self):
+        self.client.force_login(self.kid_user)
+        for person in ('fille', 'fils'):
+            resp = self.client.post(reverse('timer_task'), {
+                'person': person, 'task_id': 'reveil', 'day': self.day, 'action': 'start',
+            })
+            self.assertEqual(resp.status_code, 200, person)
 
-    def test_unassigned_kid_cannot_time_anyone(self):
-        self.client.force_login(self.unassigned_user)
-        resp = self.client.post(reverse('timer_task'), {
-            'person': 'fille', 'task_id': 'reveil', 'day': self.day, 'action': 'start',
-        })
-        self.assertEqual(resp.status_code, 403)
+    def test_shared_kid_account_can_reorder_either_kids_tasks(self):
+        self.client.force_login(self.kid_user)
+        for person in ('fille', 'fils'):
+            resp = self.client.post(reverse('reorder_tasks'), {
+                'person': person, 'task_ids[]': ['reveil', 'lit'],
+            })
+            self.assertEqual(resp.status_code, 200, person)
 
-    def test_assigned_kid_can_reorder_own_tasks_only(self):
-        self.client.force_login(self.fille_user)
-        own = self.client.post(reverse('reorder_tasks'), {
-            'person': 'fille', 'task_ids[]': ['reveil', 'lit'],
-        })
-        self.assertEqual(own.status_code, 200)
-        self.client.force_login(self.fille_user)
-        sibling = self.client.post(reverse('reorder_tasks'), {
-            'person': 'fils', 'task_ids[]': ['reveil'],
-        })
-        self.assertEqual(sibling.status_code, 403)
-
-    def test_unassigned_kid_cannot_reorder_anyone(self):
-        self.client.force_login(self.unassigned_user)
-        resp = self.client.post(reverse('reorder_tasks'), {'person': 'fille', 'task_ids[]': ['reveil']})
-        self.assertEqual(resp.status_code, 403)
-
-    def test_today_view_shows_only_the_assigned_kid_card(self):
-        self.client.force_login(self.fille_user)
+    def test_today_view_shows_both_kid_cards_fully_checkable(self):
+        self.client.force_login(self.kid_user)
         resp = self.client.get(reverse('today'))
         self.assertEqual(resp.status_code, 200)
         kid_cards = resp.context['kid_cards']
-        self.assertEqual([c['person'] for c in kid_cards], ['fille'])
-        self.assertTrue(kid_cards[0]['checkable_by_viewer'])
-        self.assertEqual(resp.context['parent_cards'], [])
-
-    def test_today_view_unassigned_kid_sees_both_kids_read_only(self):
-        self.client.force_login(self.unassigned_user)
-        resp = self.client.get(reverse('today'))
-        kid_cards = resp.context['kid_cards']
         self.assertEqual(sorted(c['person'] for c in kid_cards), ['fille', 'fils'])
-        self.assertTrue(all(not c['checkable_by_viewer'] for c in kid_cards))
-        self.assertTrue(resp.context['kid_unassigned'])
+        self.assertTrue(all(c['checkable_by_viewer'] for c in kid_cards))
+        self.assertEqual(resp.context['parent_cards'], [])
 
     def test_today_view_parent_sees_everyone_by_default(self):
         self.client.force_login(self.parent)
         resp = self.client.get(reverse('today'))
         self.assertEqual(sorted(c['person'] for c in resp.context['kid_cards']), ['fille', 'fils'])
         self.assertEqual(sorted(c['person'] for c in resp.context['parent_cards']), ['maman', 'papa'])
-        self.assertFalse(resp.context['kid_unassigned'])
-
-
-class SetMemberKidTests(TestCase):
-    """Only a parent may assign FamilyMembership.kid_person — a kid account granting itself
-    (or a sibling) access would defeat the permission fix above entirely."""
-
-    def setUp(self):
-        self.family = Family.objects.create(name='AssignFam', invite_code='ASSIGNF1')
-        FamilySettings.load(self.family)
-        self.parent = User.objects.create_user('assignparent', password='pass12345')
-        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
-        self.child_user = User.objects.create_user('assignchild', password='pass12345')
-        self.child_membership = FamilyMembership.objects.create(
-            user=self.child_user, family=self.family, role='enfants'
-        )
-
-    def test_parent_can_assign_kid_person(self):
-        self.client.force_login(self.parent)
-        resp = self.client.post(
-            reverse('set_member_kid', args=[self.child_membership.id]), {'kid_person': 'fille'}
-        )
-        self.assertEqual(resp.status_code, 302)
-        self.child_membership.refresh_from_db()
-        self.assertEqual(self.child_membership.kid_person, 'fille')
-
-    def test_parent_can_clear_assignment(self):
-        self.child_membership.kid_person = 'fille'
-        self.child_membership.save()
-        self.client.force_login(self.parent)
-        resp = self.client.post(
-            reverse('set_member_kid', args=[self.child_membership.id]), {'kid_person': ''}
-        )
-        self.assertEqual(resp.status_code, 302)
-        self.child_membership.refresh_from_db()
-        self.assertEqual(self.child_membership.kid_person, '')
-
-    def test_invalid_kid_is_rejected(self):
-        self.client.force_login(self.parent)
-        resp = self.client.post(
-            reverse('set_member_kid', args=[self.child_membership.id]), {'kid_person': 'papa'}
-        )
-        self.assertEqual(resp.status_code, 302)
-        self.child_membership.refresh_from_db()
-        self.assertEqual(self.child_membership.kid_person, '')
-
-    def test_child_cannot_assign_itself(self):
-        self.client.force_login(self.child_user)
-        resp = self.client.post(
-            reverse('set_member_kid', args=[self.child_membership.id]), {'kid_person': 'fille'}
-        )
-        self.assertEqual(resp.status_code, 403)
-        self.child_membership.refresh_from_db()
-        self.assertEqual(self.child_membership.kid_person, '')
 
 
 class WhoFilterTests(TestCase):
@@ -814,11 +715,11 @@ class WhoFilterTests(TestCase):
 
     def test_who_selector_not_offered_to_enfants_accounts(self):
         child = User.objects.create_user('whochild', password='pass12345')
-        FamilyMembership.objects.create(user=child, family=self.family, role='enfants', kid_person='fille')
+        FamilyMembership.objects.create(user=child, family=self.family, role='enfants')
         self.client.force_login(child)
         resp = self.client.get(reverse('today'), {'who': 'fils'})
         self.assertIsNone(resp.context['who_options'])
-        self.assertEqual([c['person'] for c in resp.context['kid_cards']], ['fille'])
+        self.assertEqual(sorted(c['person'] for c in resp.context['kid_cards']), ['fille', 'fils'])
 
 
 class HomeHighlightsTests(TestCase):
