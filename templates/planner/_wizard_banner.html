@@ -1,7 +1,9 @@
-{# Progress banner for the "Préparer notre semaine" wizard (Lot 5b) — included by week.html,
-   settings.html, menu.html and maison.html when their view passed a non-empty `wizard` context
-   (see views._wizard_banner). Pure display: every link below points at a real screen with its
-   own ?wizard=1&step=N, nothing here duplicates the underlying page's logic. #}
+{% comment %}
+Progress banner for the "Préparer notre semaine" wizard (Lot 5b) — included by week.html,
+settings.html, menu.html and maison.html when their view passed a non-empty `wizard` context
+(see views._wizard_banner). Pure display: every link below points at a real screen with its
+own ?wizard=1&step=N, nothing here duplicates the underlying page's logic.
+{% endcomment %}
 <div class="card wizard-banner">
   <div class="wizard-banner-head">
     <span class="wizard-step-badge">Étape {{ wizard.step }}/{{ wizard.total }}</span>

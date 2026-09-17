@@ -482,6 +482,7 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
 
 .src-badge{display:inline-flex;align-items:center;border-radius:999px;padding:2px 9px;font-size:10.5px;
   font-weight:800;margin-left:6px;text-transform:uppercase;letter-spacing:.02em;vertical-align:1px;}
+.src-badge[hidden]{display:none;}
 .src-badge.menu{background:var(--plum);color:#fff;}
 .src-badge.default{background:#f1eeff;color:var(--navy-2);}
 .src-badge.home{background:var(--mint);color:#053b34;}
