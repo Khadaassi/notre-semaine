@@ -23,7 +23,7 @@ from .models import (
     FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem,
     CustomTask, FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars, TaskException,
     format_quantity, TASK_EXCEPTION_KIND_CHOICES, DayMode, DAY_MODE_CHOICES, PERSON_CHOICES,
-    HelpRequest,
+    HelpRequest, RoutineReminder, REMINDER_PHASE_CHOICES,
 )
 from .task_logic import (
     DAYS, DAY_FULL, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for, next_day, pillar_for,
@@ -662,6 +662,106 @@ def toggle_help(request):
     return JsonResponse({'ok': True, 'needs_help': wants_help})
 
 
+def _phase_progress(family, settings, people, day, real_date):
+    """Reste-t-il quelque chose à faire, par (personne, phase) ? Dérivé de _person_day_tasks,
+    donc exactement le même décompte que « Aujourd'hui » et que la routine guidée : un rappel
+    ne peut pas prétendre qu'il reste des tâches là où l'écran affiche que tout est coché."""
+    activities = list(Activity.objects.filter(family=family))
+    custom_tasks = list(CustomTask.objects.filter(family=family))
+    orders = {}
+    for o in TaskOrder.objects.filter(family=family):
+        orders.setdefault(o.person, {})[o.task_id] = o.order
+
+    progress = {}
+    for person in people:
+        _day_mode, _flat, phases = _person_day_tasks(
+            family, person, day, real_date, settings, activities, custom_tasks, orders,
+        )
+        for phase_key, phase_label, tasks in phases:
+            checkable = [t for t in tasks if not t['info'] and not t['not_applicable']]
+            done = sum(1 for t in checkable if t['done'])
+            progress[(person, phase_key)] = {
+                'phase_label': phase_label, 'total': len(checkable), 'done': done,
+                'remaining': len(checkable) - done,
+            }
+    return progress
+
+
+def _due_reminders(family, settings, now=None):
+    """Les rappels à afficher maintenant, en heure locale Django (Europe/Paris).
+
+    Un rappel s'affiche si — et seulement si — les rappels sont activés pour la famille,
+    l'heure locale est hors de la plage de calme, le jour fait partie de ses jours, son
+    heure est passée, il n'a pas été mis en sourdine aujourd'hui, et il reste réellement
+    des tâches dans la phase visée. Autrement dit on ne rappelle jamais une routine déjà
+    terminée, et jamais une phase vide.
+
+    Volontairement calculé à la demande, sans tâche planifiée ni file d'attente : c'est ce
+    qui permet de tenir la promesse « aucune infrastructure supplémentaire », au prix
+    assumé de ne rien pouvoir afficher quand l'application est fermée."""
+    if not settings.reminders_enabled:
+        return []
+    now = now or _now()
+    if settings.in_quiet_hours(now.time()):
+        return []
+
+    today, current = now.date(), now.time()
+    day = DAYS[today.weekday()]
+    kids = set(_kids_people(settings))
+    candidates = [
+        r for r in RoutineReminder.objects.filter(family=family, active=True)
+        if r.person in kids and r.occurs_on_day(day) and r.at_time <= current and r.acked_on != today
+    ]
+    if not candidates:
+        return []
+
+    progress = _phase_progress(family, settings, {r.person for r in candidates}, day, today)
+    due = []
+    for reminder in candidates:
+        state = progress.get((reminder.person, reminder.phase))
+        if not state or not state['remaining']:
+            continue
+        name = _person_label(reminder.person, settings)
+        due.append({
+            'id': reminder.id,
+            'person': reminder.person,
+            'person_name': name,
+            'phase': reminder.phase,
+            'phase_label': state['phase_label'],
+            'label': reminder.label or reminder.default_label(name),
+            'at_time': reminder.at_time.strftime('%H:%M'),
+            'remaining': state['remaining'],
+        })
+    return due
+
+
+@login_required
+def reminders_json(request):
+    """Interrogé toutes les minutes par la page ouverte, pour qu'un rappel apparaisse sans
+    rechargement. Lecture seule et limité à la famille de l'utilisateur."""
+    family = _get_family(request)
+    settings = FamilySettings.load(family)
+    return JsonResponse({'reminders': _due_reminders(family, settings)})
+
+
+@login_required
+@require_POST
+def snooze_reminder(request):
+    """« Plus tard » : met le rappel en sourdine pour la journée en cours seulement — il
+    repart de lui-même le lendemain, sans que personne ait à le réactiver."""
+    family = _get_family(request)
+    reminder = RoutineReminder.objects.filter(
+        pk=request.POST.get('reminder_id'), family=family
+    ).first()
+    if reminder is None:
+        return JsonResponse({'ok': False}, status=404)
+    if not _can_act_on(request, reminder.person):
+        raise PermissionDenied
+    reminder.acked_on = _today()
+    reminder.save(update_fields=['acked_on'])
+    return JsonResponse({'ok': True})
+
+
 @login_required
 def stars_view(request):
     family = _get_family(request)
@@ -1206,6 +1306,40 @@ def settings_view(request):
             settings.star_reward_text = request.POST.get('star_reward_text', '').strip()
             settings.save()
             messages.success(request, "Récompense enregistrée.")
+        elif 'add_reminder' in request.POST:
+            person = request.POST.get('rem_person', 'fille')
+            days_selected = [d for d in request.POST.getlist('rem_days') if d in DAYS]
+            at_time = parse_free_time(request.POST.get('rem_time', ''))
+            phase = request.POST.get('rem_phase', 'matin')
+            # Les rappels sont réservés aux enfants : on le vérifie ici, pas seulement dans
+            # la liste déroulante du formulaire.
+            if person not in _kids_people(settings):
+                messages.error(request, "Les rappels ne concernent que les routines des enfants.")
+            elif phase not in dict(REMINDER_PHASE_CHOICES):
+                messages.error(request, "Moment de la journée invalide.")
+            elif at_time is None:
+                messages.error(request, "Indiquez une heure pour le rappel (par exemple 7h30).")
+            elif not days_selected:
+                messages.error(request, "Choisissez au moins un jour pour ce rappel.")
+            else:
+                RoutineReminder.objects.create(
+                    family=family, person=person, phase=phase, at_time=at_time,
+                    days=days_selected, label=request.POST.get('rem_label', '').strip(),
+                )
+                messages.success(
+                    request,
+                    f"Rappel ajouté à {at_time:%H:%M} — {_days_summary(days_selected)}.",
+                )
+        elif 'save_reminder_settings' in request.POST:
+            quiet_start = parse_free_time(request.POST.get('quiet_start', ''))
+            quiet_end = parse_free_time(request.POST.get('quiet_end', ''))
+            settings.reminders_enabled = 'reminders_enabled' in request.POST
+            if quiet_start is not None:
+                settings.quiet_start = quiet_start
+            if quiet_end is not None:
+                settings.quiet_end = quiet_end
+            settings.save()
+            messages.success(request, "Réglages des rappels enregistrés.")
         elif 'regenerate_tablet_token' in request.POST:
             settings.regenerate_tablet_token()
             messages.success(request, "Lien tablette régénéré.")
@@ -1236,6 +1370,11 @@ def settings_view(request):
         c.person_name = _person_label(c.person, settings)
     members = FamilyMembership.objects.filter(family=family).select_related('user')
     tablet_url = request.build_absolute_uri(reverse('tablet', args=[settings.tablet_token])) if settings.tablet_token else ''
+    reminders = list(RoutineReminder.objects.filter(family=family))
+    for r in reminders:
+        r.person_name = _person_label(r.person, settings)
+        r.effective_label = r.label or r.default_label(r.person_name)
+        r.days_summary = _days_summary(r.days)
     task_exceptions = list(TaskException.objects.filter(family=family, active=True).order_by('-date'))
     for exc in task_exceptions:
         exc.person_name = _person_label(exc.person, settings)
@@ -1251,6 +1390,8 @@ def settings_view(request):
         # Raccourcis du sélecteur de jours : la liste vient de task_logic, jamais du template.
         'school_days_csv': ','.join(SCHOOL_DAYS), 'weekend_days_csv': ','.join(WEEKEND_DAYS),
         'task_exceptions': task_exceptions, 'wizard': wizard,
+        'reminders': reminders, 'reminder_phases': REMINDER_PHASE_CHOICES,
+        'kid_people': [(p, _person_label(p, settings)) for p in _kids_people(settings)],
     })
 
 
@@ -1304,6 +1445,29 @@ def delete_activity(request, pk):
 def delete_custom_task(request, pk):
     CustomTask.objects.filter(pk=pk, family=_get_family(request)).delete()
     messages.success(request, "Tâche supprimée.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+@require_POST
+def delete_reminder(request, pk):
+    RoutineReminder.objects.filter(pk=pk, family=_get_family(request)).delete()
+    messages.success(request, "Rappel supprimé.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+@require_POST
+def toggle_reminder(request, pk):
+    """Met un rappel en pause sans le supprimer — on garde l'horaire pour plus tard plutôt
+    que d'obliger à le ressaisir à chaque vacances scolaires."""
+    reminder = RoutineReminder.objects.filter(pk=pk, family=_get_family(request)).first()
+    if reminder:
+        reminder.active = not reminder.active
+        reminder.save(update_fields=['active'])
+        messages.success(request, "Rappel réactivé." if reminder.active else "Rappel mis en pause.")
     return redirect('settings')
 
 

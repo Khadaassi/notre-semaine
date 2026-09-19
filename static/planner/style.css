@@ -147,6 +147,7 @@ nav.tabs a .nav-icon{margin-right:6px;}
 .icon-activite{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23000' stroke='none'%3E%3Cpath d='M13 2L3 14h7l-1 8 11-14h-8z'/%3E%3C/svg%3E");}
 .icon-clock{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3.5 2'/%3E%3C/svg%3E");}
 .icon-etoile{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23000' stroke='none'%3E%3Cpath d='M12 2.5l2.9 6 6.6.7-4.9 4.6 1.3 6.5L12 16.9 6.1 20.3l1.3-6.5-4.9-4.6 6.6-.7z'/%3E%3C/svg%3E");}
+.icon-cloche{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8'/%3E%3Cpath d='M13.7 21a2 2 0 0 1-3.4 0'/%3E%3C/svg%3E");}
 .icon-checklist{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 6.5l2 2 3-3.5'/%3E%3Cpath d='M3.5 13l2 2 3-3.5'/%3E%3Cpath d='M3.5 19.5l2 2 3-3.5'/%3E%3Cline x1='12' y1='7' x2='21' y2='7'/%3E%3Cline x1='12' y1='13.5' x2='21' y2='13.5'/%3E%3Cline x1='12' y1='20' x2='21' y2='20'/%3E%3C/svg%3E");}
 .icon-aide{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.9-2.8 2.9'/%3E%3Cpath d='M12 17.2h.01'/%3E%3C/svg%3E");}
 .icon-reorder{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 20V8'/%3E%3Cpath d='M5 11l3-3 3 3'/%3E%3Cpath d='M16 4v12'/%3E%3Cpath d='M19 13l-3 3-3-3'/%3E%3C/svg%3E");}
@@ -415,8 +416,39 @@ textarea{width:100%;border:2.5px solid var(--navy);border-radius:14px;padding:10
   font-family:var(--font-body);font-weight:700;}
 .pill{background:white;border:2px solid var(--navy);border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:700;
   color:var(--navy);display:inline-flex;align-items:center;gap:6px;margin:0 6px 6px 0;}
+.pill-paused{opacity:.62;border-style:dashed;}
+.pill .pausebtn{border:none;background:transparent;color:var(--plum-dk);cursor:pointer;
+  font-size:12px;font-weight:800;padding:0;box-shadow:none !important;transform:none !important;}
+.pill .pausebtn:hover{background:transparent !important;text-decoration:underline;}
+/* Encadré qui dit franchement ce qu'une fonctionnalité ne fait pas (limites des rappels). */
+.notice-limit{background:#eef0ff;border:2px solid var(--plum);border-left-width:7px;
+  border-radius:12px;padding:10px 13px;margin:10px 0 14px;font-size:12.5px;font-weight:600;
+  line-height:1.5;color:var(--navy);}
+.notice-limit strong{display:block;font-family:var(--font-display);margin-bottom:3px;}
 
 /* ---- Édition d'une tâche personnalisée, repliée par défaut (réglages) ---- */
+/* ---- Rappels de routine (bandeau, base.html) ---- */
+.reminders{display:flex;flex-direction:column;gap:8px;margin:0 0 14px;}
+.reminder{display:flex;align-items:center;gap:11px;background:#fff8e8;border:2.5px solid var(--sun);
+  border-left-width:8px;border-radius:14px;padding:10px 13px;box-shadow:var(--shadow-sm);}
+.rem-icon{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;
+  flex:0 0 34px;border-radius:10px;background:var(--sun);}
+.rem-icon.fille{background:var(--coral);} .rem-icon.fils{background:var(--mint);}
+.rem-icon .row-icon{width:19px;height:19px;color:#fff;}
+.rem-text{display:flex;flex-direction:column;gap:1px;min-width:0;}
+.rem-text strong{font-family:var(--font-display);font-size:14.5px;color:var(--navy);}
+.rem-sub{font-size:12px;font-weight:700;color:var(--navy-2);}
+.rem-actions{margin-left:auto;display:flex;align-items:center;gap:7px;flex-shrink:0;}
+.rem-go{font-size:12.5px;font-weight:800;text-decoration:none;color:#fff;background:var(--navy);
+  border:2px solid var(--navy);border-radius:999px;padding:6px 12px;white-space:nowrap;}
+.rem-later{font-size:12.5px;font-weight:800;color:var(--navy);background:white;
+  border:2px solid var(--navy);border-radius:999px;padding:6px 12px;min-height:0;white-space:nowrap;}
+@media(max-width:560px){
+  .reminder{flex-wrap:wrap;gap:9px;padding:10px;}
+  .rem-actions{margin-left:0;width:100%;}
+  .rem-go,.rem-later{flex:1;text-align:center;}
+}
+
 .routine-entry{display:flex;align-items:center;gap:12px;text-decoration:none;margin-bottom:14px;
   background:linear-gradient(135deg, var(--plum) 0%, var(--plum-dk) 100%);color:#fff;
   border:2.5px solid var(--navy);border-radius:16px;padding:13px 15px;box-shadow:var(--shadow-md);}

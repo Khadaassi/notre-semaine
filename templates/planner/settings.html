@@ -131,6 +131,73 @@
 </div>
 
 <div class="card">
+  <h2>Rappels des routines</h2>
+  <div class="hint">
+    Un rappel s'affiche sur les écrans de l'application, à l'heure choisie, tant qu'il reste
+    des tâches dans la routine visée. Les rappels ne concernent que les routines des enfants.
+  </div>
+  <div class="notice-limit">
+    <strong>Ce que les rappels font — et ne font pas.</strong>
+    Ils s'affichent <em>uniquement quand l'application est ouverte</em> sur un appareil, et se
+    mettent à jour toutes les minutes. Ils n'envoient ni SMS, ni e-mail, ni notification sur le
+    téléphone : si personne n'a l'application ouverte, le rappel attendra la prochaine ouverture.
+    L'heure de référence est l'heure de Paris côté serveur, pas celle de la tablette.
+  </div>
+
+  <form method="post" style="margin-bottom:14px;">
+    {% csrf_token %}
+    <div class="settingsrow">
+      <label for="reminders_enabled">Afficher les rappels</label>
+      <input type="checkbox" id="reminders_enabled" name="reminders_enabled"
+             {% if settings.reminders_enabled %}checked{% endif %}>
+    </div>
+    <div class="settingsrow">
+      <label for="quiet_start">Pas de rappel à partir de</label>
+      <input type="time" id="quiet_start" name="quiet_start" value="{{ settings.quiet_start|time:'H:i' }}">
+    </div>
+    <div class="settingsrow">
+      <label for="quiet_end">…et jusqu'à</label>
+      <input type="time" id="quiet_end" name="quiet_end" value="{{ settings.quiet_end|time:'H:i' }}">
+    </div>
+    <div class="hint" style="margin-top:0;">
+      Plage de calme : aucun rappel ne s'affiche entre ces deux heures, même si son heure est
+      passée. Deux heures identiques = pas de plage de calme.
+    </div>
+    <button type="submit" name="save_reminder_settings" value="1">Enregistrer</button>
+  </form>
+
+  {% for rem in reminders %}
+    <div class="pill {% if not rem.active %}pill-paused{% endif %}">
+      <strong>{{ rem.at_time|time:'H:i' }}</strong> — {{ rem.effective_label }}
+      — {{ rem.person_name }}, {{ rem.days_summary }}{% if not rem.active %} (en pause){% endif %}
+      <form method="post" action="{% url 'toggle_reminder' rem.pk %}" style="display:inline;">{% csrf_token %}
+        <button type="submit" class="pausebtn">{% if rem.active %}Pause{% else %}Reprendre{% endif %}</button>
+      </form>
+      <form method="post" action="{% url 'delete_reminder' rem.pk %}" style="display:inline;"
+            onsubmit="return confirm('Supprimer ce rappel ?');">{% csrf_token %}
+        <button type="submit" class="delbtn">✕</button>
+      </form>
+    </div>
+  {% empty %}
+    <div class="hint">Aucun rappel pour le moment.</div>
+  {% endfor %}
+
+  <form method="post" class="addrow" style="flex-wrap:wrap;margin-top:10px;">
+    {% csrf_token %}
+    <select name="rem_person" aria-label="Enfant concerné">
+      {% for key, name in kid_people %}<option value="{{ key }}">{{ name }}</option>{% endfor %}
+    </select>
+    <select name="rem_phase" aria-label="Routine concernée">
+      {% for key, label in reminder_phases %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+    </select>
+    <input type="time" name="rem_time" value="07:30" aria-label="Heure du rappel">
+    <input type="text" name="rem_label" placeholder="Message (facultatif)" aria-label="Message du rappel">
+    {% include "planner/_day_picker.html" with day_field="rem_days" %}
+    <button type="submit" name="add_reminder" value="1">Ajouter</button>
+  </form>
+</div>
+
+<div class="card">
   <h2>Récompenses</h2>
   <div class="hint">Après combien de journées entièrement cochées la surprise se déclenche, et quel cadeau proposer.</div>
   <form method="post">
@@ -200,7 +267,10 @@
                      vendredi:'ven', samedi:'sam', dimanche:'dim'};
 
   function setup(picker) {
-    const boxes = Array.from(picker.querySelectorAll('input[name="task_days"]'));
+    /* Le nom du champ varie selon le formulaire (task_days pour une tâche, rem_days pour un
+       rappel) : on prend les cases du sélecteur, quel que soit leur nom, plutôt que de le
+       coder en dur — sinon les raccourcis ne font rien, sans rien signaler. */
+    const boxes = Array.from(picker.querySelectorAll('.daypicker-days input[type="checkbox"]'));
     const presets = Array.from(picker.querySelectorAll('.daypicker-preset'));
     const summary = picker.querySelector('[data-daypicker-summary]');
     const csv = attr => (picker.dataset[attr] || '').split(',').filter(Boolean);

@@ -4,12 +4,13 @@ Reusable day selector for a recurring task: seven tactile toggles + the four sho
 
 Included by settings.html for both the "add" and the "edit" CustomTask forms — one instance
 each, independent (the JS in settings.html scopes everything to the enclosing
-[data-daypicker]). Values post as repeated `task_days` checkboxes, exactly what
-views.settings_view / views.edit_custom_task already read with request.POST.getlist.
+[data-daypicker]). Values post as repeated checkboxes read with request.POST.getlist.
 
 Expects in context: days (ordered keys), school_days_csv / weekend_days_csv (from
 task_logic.SCHOOL_DAYS / WEEKEND_DAYS — never hardcoded here), and optionally
-selected_days (defaults to none selected, i.e. the "add" form).
+selected_days (defaults to none selected, i.e. the "add" form) and day_field (the POST
+field name, `task_days` by default — the reminder form posts `rem_days` on the same
+component rather than duplicating it).
 {% endcomment %}
 <div class="daypicker" data-daypicker
      data-school-days="{{ school_days_csv }}" data-weekend-days="{{ weekend_days_csv }}">
@@ -22,7 +23,7 @@ selected_days (defaults to none selected, i.e. the "add" form).
   <div class="daypicker-days">
     {% for d in days %}
       <label class="daytoggle">
-        <input type="checkbox" name="task_days" value="{{ d }}"
+        <input type="checkbox" name="{{ day_field|default:'task_days' }}" value="{{ d }}"
                {% if selected_days and d in selected_days %}checked{% endif %}>
         <span class="daytoggle-label">{{ d|slice:":3"|capfirst }}</span>
         <span class="visually-hidden">{{ d|capfirst }}</span>

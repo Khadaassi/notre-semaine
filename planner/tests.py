@@ -18,7 +18,7 @@ from .forms import RecipeForm, parse_ingredients_text
 from .models import (
     Family, FamilySettings, FamilyMembership, PARENT_ROLES, StarAward, KidStars,
     TaskCompletion, TaskException, Activity, Recipe, GroceryItem, WeeklyMenuEntry,
-    CustomTask, DayMode, HelpRequest,
+    CustomTask, DayMode, HelpRequest, RoutineReminder,
 )
 from .task_logic import (
     is_zone_b_holiday, ZONE_B_HOLIDAYS, DAYS, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for,
@@ -26,7 +26,7 @@ from .task_logic import (
 )
 from .views import (
     _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _level_for, _monday_of,
-    _today,
+    _today, _due_reminders, _person_day_tasks,
 )
 
 _ingredient_migration = importlib.import_module('planner.migrations.0016_migrate_ingredient_format')
@@ -2150,3 +2150,263 @@ class TemplateCommentSyntaxTests(TestCase):
                 if '{#' in line and '#}' not in line.split('{#', 1)[1]:
                     offenders.append(f'{path.relative_to(root)}:{lineno}')
         self.assertEqual(offenders, [], f"commentaires {{# #}} non fermés sur leur ligne : {offenders}")
+
+
+class ReminderQuietHoursTests(TestCase):
+    """La plage de calme peut être à cheval sur minuit (20 h 30 -> 7 h) : c'est le cas normal,
+    pas un cas limite. Deux bornes égales veulent dire « pas de plage », jamais « toujours
+    silencieux » — sinon les rappels disparaîtraient sans explication."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Calme', invite_code='QUIETFA1')
+        self.settings = FamilySettings.load(self.family)
+
+    def test_overnight_range_covers_both_sides_of_midnight(self):
+        self.settings.quiet_start = datetime.time(20, 30)
+        self.settings.quiet_end = datetime.time(7, 0)
+        self.assertTrue(self.settings.in_quiet_hours(datetime.time(22, 0)))
+        self.assertTrue(self.settings.in_quiet_hours(datetime.time(2, 0)))
+        self.assertTrue(self.settings.in_quiet_hours(datetime.time(20, 30)))
+        self.assertFalse(self.settings.in_quiet_hours(datetime.time(7, 0)))
+        self.assertFalse(self.settings.in_quiet_hours(datetime.time(12, 0)))
+        self.assertFalse(self.settings.in_quiet_hours(datetime.time(20, 29)))
+
+    def test_same_day_range(self):
+        self.settings.quiet_start = datetime.time(13, 0)
+        self.settings.quiet_end = datetime.time(15, 0)
+        self.assertTrue(self.settings.in_quiet_hours(datetime.time(14, 0)))
+        self.assertFalse(self.settings.in_quiet_hours(datetime.time(12, 0)))
+        self.assertFalse(self.settings.in_quiet_hours(datetime.time(16, 0)))
+
+    def test_equal_bounds_mean_no_quiet_hours_at_all(self):
+        self.settings.quiet_start = self.settings.quiet_end = datetime.time(9, 0)
+        for hour in (0, 9, 15, 23):
+            self.assertFalse(self.settings.in_quiet_hours(datetime.time(hour, 0)))
+
+
+class RoutineReminderTests(TestCase):
+    """Rappels de routine : uniquement pour les enfants, uniquement dans l'application,
+    à l'heure locale de Paris, et jamais sur une routine déjà terminée."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Rappels', invite_code='REMFAM01')
+        self.settings = FamilySettings.load(self.family)
+        self.settings.nb_enfants = 2
+        self.settings.fille_name = 'Aliyah'
+        self.settings.fils_name = 'Adam'
+        # Plage de calme réduite à rien pour que les tests pilotent l'heure librement.
+        self.settings.quiet_start = self.settings.quiet_end = datetime.time(3, 0)
+        self.settings.save()
+        self.parent = User.objects.create_user('remparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.today = _today()
+        self.day = DAYS[self.today.weekday()]
+
+    def _reminder(self, person='fille', phase='matin', at=datetime.time(7, 30), days=None, label=''):
+        return RoutineReminder.objects.create(
+            family=self.family, person=person, phase=phase, at_time=at,
+            days=days if days is not None else list(DAYS), label=label,
+        )
+
+    def _at(self, hour, minute=0):
+        return datetime.datetime.combine(self.today, datetime.time(hour, minute))
+
+    def test_reminder_is_due_once_its_time_has_passed(self):
+        self._reminder(at=datetime.time(7, 30))
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(7, 0)), [])
+        due = _due_reminders(self.family, self.settings, self._at(8, 0))
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]['person'], 'fille')
+        self.assertEqual(due[0]['at_time'], '07:30')
+        self.assertGreater(due[0]['remaining'], 0)
+
+    def test_reminder_only_fires_on_its_own_days(self):
+        other_day = DAYS[(self.today.weekday() + 1) % 7]
+        self._reminder(days=[other_day])
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+    def test_no_reminder_during_quiet_hours(self):
+        self.settings.quiet_start = datetime.time(20, 0)
+        self.settings.quiet_end = datetime.time(7, 0)
+        self.settings.save()
+        self._reminder(phase='soir', at=datetime.time(19, 0))
+        self.assertEqual(len(_due_reminders(self.family, self.settings, self._at(19, 30))), 1)
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(21, 0)), [])
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(2, 0)), [])
+
+    def test_family_switch_silences_every_reminder(self):
+        self._reminder()
+        self.settings.reminders_enabled = False
+        self.settings.save()
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+    def test_paused_reminder_does_not_fire(self):
+        rem = self._reminder()
+        rem.active = False
+        rem.save(update_fields=['active'])
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+    def test_finished_routine_is_never_reminded(self):
+        rem = self._reminder(phase='matin')
+        due = _due_reminders(self.family, self.settings, self._at(23, 0))
+        self.assertEqual(len(due), 1)
+
+        # On coche tout ce que contient la phase visée, comme le ferait l'enfant.
+        _dm, _flat, phases = _person_day_tasks(
+            self.family, 'fille', self.day, self.today, self.settings,
+            [], [], {},
+        )
+        for phase_key, _label, tasks in phases:
+            if phase_key != rem.phase:
+                continue
+            for task in tasks:
+                if task['info'] or task['not_applicable']:
+                    continue
+                TaskCompletion.objects.update_or_create(
+                    family=self.family, person='fille', date=self.today,
+                    task_id=task['id'], defaults={'done': True},
+                )
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+    def test_snooze_silences_only_today(self):
+        rem = self._reminder()
+        resp = self.client.post(reverse('snooze_reminder'), {'reminder_id': rem.id})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+        rem.refresh_from_db()
+        self.assertEqual(rem.acked_on, self.today)
+        # Le lendemain il repart tout seul : rien à réactiver à la main.
+        rem.acked_on = self.today - datetime.timedelta(days=1)
+        rem.save(update_fields=['acked_on'])
+        self.assertEqual(len(_due_reminders(self.family, self.settings, self._at(23, 0))), 1)
+
+    def test_snooze_of_another_family_is_refused(self):
+        rem = self._reminder()
+        other = Family.objects.create(name='Autre', invite_code='REMFAM02')
+        FamilySettings.load(other)
+        intruder = User.objects.create_user('remintrus', password='pass12345')
+        FamilyMembership.objects.create(user=intruder, family=other, role='maman')
+        self.client.force_login(intruder)
+
+        resp = self.client.post(reverse('snooze_reminder'), {'reminder_id': rem.id})
+        self.assertEqual(resp.status_code, 404)
+        rem.refresh_from_db()
+        self.assertIsNone(rem.acked_on)
+
+    def test_reminders_are_scoped_to_the_family(self):
+        other = Family.objects.create(name='Autre2', invite_code='REMFAM03')
+        other_settings = FamilySettings.load(other)
+        other_settings.quiet_start = other_settings.quiet_end = datetime.time(3, 0)
+        other_settings.save()
+        RoutineReminder.objects.create(
+            family=other, person='fille', phase='matin',
+            at_time=datetime.time(6, 0), days=list(DAYS),
+        )
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+    def test_settings_form_creates_a_reminder(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_reminder': '1', 'rem_person': 'fille', 'rem_phase': 'soir',
+            'rem_time': '19h15', 'rem_days': ['lundi', 'mardi'], 'rem_label': 'Au dodo',
+        })
+        self.assertEqual(resp.status_code, 302)
+        rem = RoutineReminder.objects.get(family=self.family)
+        self.assertEqual(rem.at_time, datetime.time(19, 15))
+        self.assertEqual(rem.days, ['lundi', 'mardi'])
+        self.assertEqual(rem.label, 'Au dodo')
+
+    def test_settings_form_refuses_a_reminder_for_a_parent(self):
+        self.client.post(reverse('settings'), {
+            'add_reminder': '1', 'rem_person': 'maman', 'rem_phase': 'matin',
+            'rem_time': '07:30', 'rem_days': ['lundi'],
+        })
+        self.assertFalse(RoutineReminder.objects.filter(family=self.family).exists())
+
+    def test_settings_form_refuses_a_reminder_without_days_or_time(self):
+        self.client.post(reverse('settings'), {
+            'add_reminder': '1', 'rem_person': 'fille', 'rem_phase': 'matin',
+            'rem_time': '07:30', 'rem_days': [],
+        })
+        self.client.post(reverse('settings'), {
+            'add_reminder': '1', 'rem_person': 'fille', 'rem_phase': 'matin',
+            'rem_time': 'n\'importe quoi', 'rem_days': ['lundi'],
+        })
+        self.assertFalse(RoutineReminder.objects.filter(family=self.family).exists())
+
+    def test_quiet_hours_are_saved_from_the_settings_form(self):
+        self.client.post(reverse('settings'), {
+            'save_reminder_settings': '1', 'reminders_enabled': 'on',
+            'quiet_start': '21:00', 'quiet_end': '06:45',
+        })
+        self.settings.refresh_from_db()
+        self.assertTrue(self.settings.reminders_enabled)
+        self.assertEqual(self.settings.quiet_start, datetime.time(21, 0))
+        self.assertEqual(self.settings.quiet_end, datetime.time(6, 45))
+
+    def test_unchecking_the_switch_disables_reminders(self):
+        self.client.post(reverse('settings'), {
+            'save_reminder_settings': '1', 'quiet_start': '21:00', 'quiet_end': '06:45',
+        })
+        self.settings.refresh_from_db()
+        self.assertFalse(self.settings.reminders_enabled)
+
+    def test_pause_and_delete_from_settings(self):
+        rem = self._reminder()
+        self.client.post(reverse('toggle_reminder', args=[rem.pk]))
+        rem.refresh_from_db()
+        self.assertFalse(rem.active)
+        self.client.post(reverse('toggle_reminder', args=[rem.pk]))
+        rem.refresh_from_db()
+        self.assertTrue(rem.active)
+        self.client.post(reverse('delete_reminder', args=[rem.pk]))
+        self.assertFalse(RoutineReminder.objects.filter(pk=rem.pk).exists())
+
+    def test_a_kid_account_cannot_delete_a_reminder(self):
+        rem = self._reminder()
+        kid = User.objects.create_user('remkid', password='pass12345')
+        FamilyMembership.objects.create(user=kid, family=self.family, role='enfants')
+        self.client.force_login(kid)
+        self.client.post(reverse('delete_reminder', args=[rem.pk]))
+        self.assertTrue(RoutineReminder.objects.filter(pk=rem.pk).exists())
+
+    def test_json_endpoint_returns_the_due_reminders(self):
+        self._reminder(at=datetime.time(0, 1))
+        resp = self.client.get(reverse('reminders_json'))
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()['reminders']
+        self.assertTrue(any(r['person'] == 'fille' for r in payload))
+
+    def test_json_endpoint_requires_login(self):
+        self.client.logout()
+        resp = self.client.get(reverse('reminders_json'))
+        self.assertEqual(resp.status_code, 302)
+
+    def test_banner_is_rendered_server_side_without_javascript(self):
+        self._reminder(at=datetime.time(0, 1), label='Debout !')
+        resp = self.client.get(reverse('today'))
+        self.assertContains(resp, 'Debout !')
+
+
+class DayPickerReuseTests(TestCase):
+    """Le sélecteur de jours est partagé par plusieurs formulaires avec des noms de champ
+    différents (`task_days`, `rem_days`). Son JS doit sélectionner les cases par le
+    composant, pas par un nom de champ codé en dur : sinon les raccourcis « tous les jours /
+    jours d'école / week-end » ne font rien dans le formulaire réutilisé, sans erreur
+    visible. C'est exactement ce qui est arrivé en ajoutant les rappels."""
+
+    def test_day_picker_js_does_not_hardcode_a_field_name(self):
+        import pathlib
+        js = (pathlib.Path(__file__).resolve().parent.parent
+              / 'templates' / 'planner' / 'settings.html').read_text()
+        self.assertNotIn(
+            'querySelectorAll(\'input[name="task_days"]\')', js,
+            "le sélecteur de jours doit prendre ses cases par le composant, pas par un nom de champ",
+        )
+
+    def test_day_picker_template_allows_a_custom_field_name(self):
+        import pathlib
+        tpl = (pathlib.Path(__file__).resolve().parent.parent
+               / 'templates' / 'planner' / '_day_picker.html').read_text()
+        self.assertIn('day_field', tpl)

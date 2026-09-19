@@ -1,0 +1,20 @@
+{% comment %}
+  Bandeau de rappels. Rendu une première fois par le serveur (donc visible même sans JS),
+  puis rafraîchi toutes les minutes par base.html pour qu'un rappel apparaisse à son heure
+  sans que personne ait à recharger la page.
+{% endcomment %}
+<div class="reminders" data-reminders {% if not due_reminders %}hidden{% endif %} role="status" aria-live="polite">
+  {% for rem in due_reminders %}
+  <div class="reminder" data-reminder="{{ rem.id }}">
+    <span class="rem-icon {{ rem.person }}"><span class="row-icon icon-cloche"></span></span>
+    <span class="rem-text">
+      <strong>{{ rem.label }}</strong>
+      <span class="rem-sub">{{ rem.at_time }} — il reste {{ rem.remaining }} tâche{{ rem.remaining|pluralize }}</span>
+    </span>
+    <span class="rem-actions">
+      <a class="rem-go" href="{% url 'routine' %}">Y aller</a>
+      <button type="button" class="rem-later" data-snooze="{{ rem.id }}">Plus tard</button>
+    </span>
+  </div>
+  {% endfor %}
+</div>

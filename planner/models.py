@@ -1,3 +1,4 @@
+import datetime
 import secrets
 from decimal import Decimal, InvalidOperation
 
@@ -70,6 +71,32 @@ class FamilySettings(models.Model):
     # Long, unguessable slug for the unauthenticated read-only kitchen tablet display
     # (see views.tablet_view) — generated once in `load()`, regenerable from settings.
     tablet_token = models.CharField(max_length=64, blank=True, default='')
+    # Rappels de routine (voir RoutineReminder). Interrupteur global de la famille + plage
+    # de calme pendant laquelle aucun rappel ne s'affiche, même si son heure est passée.
+    # Les heures sont interprétées en heure locale Django (Europe/Paris), jamais en heure
+    # système du serveur — voir views._now().
+    reminders_enabled = models.BooleanField(
+        default=True, help_text="Afficher les rappels de routine des enfants dans l'application."
+    )
+    quiet_start = models.TimeField(
+        default=datetime.time(20, 30), help_text="Début de la plage sans rappel (le soir)."
+    )
+    quiet_end = models.TimeField(
+        default=datetime.time(7, 0), help_text="Fin de la plage sans rappel (le matin)."
+    )
+
+    def in_quiet_hours(self, value):
+        """Plage de calme, éventuellement à cheval sur minuit (20 h 30 -> 7 h).
+
+        Si les deux bornes sont égales, la plage est vide : on considère qu'il n'y a pas
+        d'heures calmes, plutôt qu'un silence permanent qui rendrait les rappels invisibles
+        sans que personne comprenne pourquoi."""
+        start, end = self.quiet_start, self.quiet_end
+        if start == end:
+            return False
+        if start < end:
+            return start <= value < end
+        return value >= start or value < end
 
     class Meta:
         verbose_name = "Réglages famille"
@@ -458,3 +485,52 @@ class GroceryItem(models.Model):
         if text and self.unit:
             return f"{text} {self.unit}"
         return text or self.unit
+
+
+REMINDER_PHASE_CHOICES = PHASE_CHOICES
+
+
+class RoutineReminder(models.Model):
+    """Un rappel de routine pour UN enfant, à une heure et sur des jours choisis.
+
+    Rappel *dans l'application*, et rien d'autre : il s'affiche sur « Aujourd'hui » et sur
+    la routine guidée quand l'heure locale est passée et que la routine visée n'est pas
+    finie. Aucun SMS, aucune notification push, aucun service externe — c'est une limite
+    assumée, écrite noir sur blanc dans les réglages pour que personne ne compte dessus
+    pour être prévenu quand l'app est fermée.
+
+    Réservé aux enfants (`person` dans fille/fils) : les parents organisent leur journée
+    eux-mêmes, et l'écran des enfants est le seul où un rappel a un sens pédagogique.
+
+    `acked_on` porte la mise en sourdine du jour (« Plus tard ») : une seule date sur la
+    ligne, donc pas de table d'accusés qui grossirait à chaque jour et à chaque rappel.
+    """
+    family = models.ForeignKey(Family, on_delete=models.CASCADE)
+    person = models.CharField(max_length=10, choices=PERSON_CHOICES)
+    phase = models.CharField(max_length=10, choices=REMINDER_PHASE_CHOICES, default='matin')
+    at_time = models.TimeField()
+    days = models.JSONField(default=list, blank=True)
+    label = models.CharField(max_length=120, blank=True, default='')
+    active = models.BooleanField(default=True)
+    # Jour où le rappel a été mis en sourdine depuis l'écran ; il repart tout seul le lendemain.
+    acked_on = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['at_time', 'person', 'id']
+        indexes = [models.Index(fields=['family', 'active'])]
+
+    def __str__(self):
+        return f"{self.person} {self.phase} {self.at_time:%H:%M} ({self.days_display()})"
+
+    def days_display(self):
+        return ', '.join(DAY_LABELS.get(d, d) for d in self.days)
+
+    def phase_display(self):
+        return dict(REMINDER_PHASE_CHOICES).get(self.phase, self.phase)
+
+    def default_label(self, person_name):
+        return f"Routine du {self.phase_display().lower()} de {person_name}"
+
+    def occurs_on_day(self, day):
+        return day in (self.days or [])
