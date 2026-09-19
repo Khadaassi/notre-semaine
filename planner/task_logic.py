@@ -9,6 +9,7 @@ DAYS = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche']
 DAY_FULL = {'lundi': 'Lundi', 'mardi': 'Mardi', 'mercredi': 'Mercredi', 'jeudi': 'Jeudi',
             'vendredi': 'Vendredi', 'samedi': 'Samedi', 'dimanche': 'Dimanche'}
 SCHOOL_DAYS = ['lundi', 'mardi', 'jeudi', 'vendredi']
+WEEKEND_DAYS = ['samedi', 'dimanche']
 DEEP_CLEAN_ROOMS = {'lundi': 'Salon', 'mardi': 'Salle de bain', 'mercredi': 'Chambre parents',
                      'jeudi': 'Chambre des enfants', 'vendredi': 'Entrée & couloir'}
 
@@ -20,6 +21,10 @@ def next_day(day):
 
 def is_school_day(day):
     return day in SCHOOL_DAYS
+
+
+def is_weekend_day(day):
+    return day in WEEKEND_DAYS
 
 
 def is_bureau_day(day, settings):

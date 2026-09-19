@@ -82,7 +82,8 @@
 
 <div class="card">
   <h2>Tâches personnalisées</h2>
-  <div class="hint">S'ajoutent à la routine habituelle, sans toucher au code. Une tâche peut revenir sur plusieurs jours (sélection multiple).</div>
+  <div class="hint">S'ajoutent à la routine habituelle, sans toucher au code. Choisis les jours où la tâche revient :
+    une seule tâche est enregistrée, avec sa récurrence.</div>
   {% for c in custom_tasks %}
     <div class="pill">{{ c.person_name }} — {{ c.label }} — {{ c.days_display }} ({{ c.get_period_display }})
       <form method="post" action="{% url 'delete_custom_task' c.id %}" style="display:inline;" onsubmit="return confirm('Supprimer cette tâche ?');">{% csrf_token %}
@@ -100,9 +101,7 @@
           <option value="papa" {% if c.person == 'papa' %}selected{% endif %}>{{ settings.papa_name }}</option>
         </select>
         <input type="text" name="task_label" value="{{ c.label }}" placeholder="Tâche">
-        <select name="task_days" multiple size="4">
-          {% for d in days %}<option value="{{ d }}" {% if d in c.days %}selected{% endif %}>{{ d|capfirst }}</option>{% endfor %}
-        </select>
+        {% include "planner/_day_picker.html" with selected_days=c.days %}
         <select name="task_period">
           <option value="matin" {% if c.period == 'matin' %}selected{% endif %}>Matin</option>
           <option value="journee" {% if c.period == 'journee' %}selected{% endif %}>Journée</option>
@@ -121,7 +120,7 @@
       <option value="papa">{{ settings.papa_name }}</option>
     </select>
     <input type="text" name="task_label" placeholder="Tâche">
-    <select name="task_days" multiple size="4">{% for d in days %}<option value="{{ d }}">{{ d|capfirst }}</option>{% endfor %}</select>
+    {% include "planner/_day_picker.html" %}
     <select name="task_period">
       <option value="matin">Matin</option>
       <option value="journee">Journée</option>
@@ -190,4 +189,78 @@
     </div>
   {% endfor %}
 </div>
+
+<script>
+/* ---- Sélecteur de jours (voir _day_picker.html) ----
+   Chaque [data-daypicker] est autonome : la page en contient un par formulaire de tâche
+   (ajout + une modification par tâche existante). Les raccourcis ne font que cocher des
+   cases réelles — sans JS, les 7 cases restent utilisables et le formulaire fonctionne. */
+(function () {
+  const DAY_SHORT = {lundi:'lun', mardi:'mar', mercredi:'mer', jeudi:'jeu',
+                     vendredi:'ven', samedi:'sam', dimanche:'dim'};
+
+  function setup(picker) {
+    const boxes = Array.from(picker.querySelectorAll('input[name="task_days"]'));
+    const presets = Array.from(picker.querySelectorAll('.daypicker-preset'));
+    const summary = picker.querySelector('[data-daypicker-summary]');
+    const csv = attr => (picker.dataset[attr] || '').split(',').filter(Boolean);
+    const schoolDays = csv('schoolDays');
+    const weekendDays = csv('weekendDays');
+
+    const selected = () => boxes.filter(b => b.checked).map(b => b.value);
+    const sameSet = (a, b) => a.length === b.length && a.every(v => b.includes(v));
+
+    function matchedPreset(days) {
+      if (!days.length) return 'custom';
+      if (days.length === boxes.length) return 'all';
+      if (sameSet(days, schoolDays)) return 'school';
+      if (sameSet(days, weekendDays)) return 'weekend';
+      return 'custom';
+    }
+
+    function render() {
+      const days = selected();
+      const preset = matchedPreset(days);
+      presets.forEach(b => b.setAttribute('aria-pressed', b.dataset.preset === preset ? 'true' : 'false'));
+      if (!days.length) {
+        summary.textContent = 'Aucun jour sélectionné — choisis au moins un jour.';
+        summary.classList.add('empty');
+        return;
+      }
+      summary.classList.remove('empty');
+      const list = days.map(d => DAY_SHORT[d] || d).join(', ');
+      if (preset === 'all') summary.textContent = 'Tous les jours';
+      else if (preset === 'school') summary.textContent = "Jours d'école (" + list + ')';
+      else if (preset === 'weekend') summary.textContent = 'Week-end (' + list + ')';
+      else summary.textContent = days.length + (days.length > 1 ? ' jours : ' : ' jour : ') + list;
+    }
+
+    function apply(preset) {
+      const target = preset === 'all' ? boxes.map(b => b.value)
+                   : preset === 'school' ? schoolDays
+                   : preset === 'weekend' ? weekendDays
+                   : [];  // "Personnaliser" repart d'une sélection vide, à composer à la main
+      boxes.forEach(b => { b.checked = target.includes(b.value); });
+      render();
+    }
+
+    presets.forEach(b => b.addEventListener('click', () => apply(b.dataset.preset)));
+    boxes.forEach(b => b.addEventListener('change', render));
+
+    // Garde-fou immédiat : le serveur refuse déjà une sélection vide, ça évite l'aller-retour.
+    const form = picker.closest('form');
+    if (form) {
+      form.addEventListener('submit', e => {
+        if (selected().length) return;
+        e.preventDefault();
+        render();
+        summary.focus && summary.focus();
+      });
+    }
+    render();
+  }
+
+  document.querySelectorAll('[data-daypicker]').forEach(setup);
+})();
+</script>
 {% endblock %}

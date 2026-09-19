@@ -1,10 +1,12 @@
 import datetime
 import importlib
+import re
 from decimal import Decimal
 
 from django.apps import apps
 from django.apps import apps as django_apps
 from django.contrib.auth.models import User
+from django.contrib.messages import get_messages
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase
@@ -16,7 +18,10 @@ from .models import (
     TaskCompletion, TaskException, Activity, Recipe, GroceryItem, WeeklyMenuEntry,
     CustomTask, DayMode,
 )
-from .task_logic import is_zone_b_holiday, ZONE_B_HOLIDAYS, DAYS, tasks_for, find_schedule_conflicts
+from .task_logic import (
+    is_zone_b_holiday, ZONE_B_HOLIDAYS, DAYS, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for,
+    find_schedule_conflicts,
+)
 from .views import (
     _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _level_for, _monday_of,
 )
@@ -1173,6 +1178,98 @@ class CustomTaskSettingsViewTests(TestCase):
         self.assertEqual(task.label, 'New')
         self.assertEqual(sorted(task.days), ['jeudi', 'mardi'])
         self.assertEqual(task.person, 'fils')
+
+
+class DayPickerTests(TestCase):
+    """The day picker (_day_picker.html): one submit stores one recurring task, the school-day
+    shortcut reads task_logic.SCHOOL_DAYS rather than a hardcoded list, editing prefills the
+    right boxes, and an empty selection is refused with a message that says which half is
+    missing."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='DP', invite_code='DAYPICKFAM1')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('dpparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+
+    def _messages(self, resp):
+        return [str(m) for m in get_messages(resp.wsgi_request)]
+
+    def test_selecting_all_seven_days_creates_one_task_not_seven(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fille', 'task_label': 'Quotidienne',
+            'task_days': list(DAYS), 'task_period': 'matin',
+        })
+        self.assertEqual(resp.status_code, 302)
+        tasks = CustomTask.objects.filter(family=self.family, label='Quotidienne')
+        self.assertEqual(tasks.count(), 1)
+        self.assertEqual(sorted(tasks.first().days), sorted(DAYS))
+        self.assertIn('tous les jours', self._messages(resp)[-1])
+
+    def test_school_days_shortcut_matches_task_logic_config(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fils', 'task_label': 'Cartable',
+            'task_days': list(SCHOOL_DAYS), 'task_period': 'soir',
+        })
+        task = CustomTask.objects.get(family=self.family, label='Cartable')
+        self.assertEqual(sorted(task.days), sorted(SCHOOL_DAYS))
+        self.assertNotIn('mercredi', task.days)  # mercredi n'est pas un jour d'école ici
+        self.assertIn("les jours d'école", self._messages(resp)[-1])
+
+    def test_weekend_shortcut_selects_saturday_and_sunday(self):
+        self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fille', 'task_label': 'Grasse mat',
+            'task_days': list(WEEKEND_DAYS), 'task_period': 'matin',
+        })
+        task = CustomTask.objects.get(family=self.family, label='Grasse mat')
+        self.assertEqual(sorted(task.days), ['dimanche', 'samedi'])
+
+    def test_picker_renders_a_checkbox_per_day_with_shortcut_config(self):
+        resp = self.client.get(reverse('settings'))
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode()
+        for day in DAYS:
+            self.assertIn(f'name="task_days" value="{day}"', html)
+        self.assertIn(f'data-school-days="{",".join(SCHOOL_DAYS)}"', html)
+        self.assertIn(f'data-weekend-days="{",".join(WEEKEND_DAYS)}"', html)
+
+    def test_edit_form_prefills_the_tasks_current_days(self):
+        CustomTask.objects.create(
+            family=self.family, person='fille', days=['mardi', 'jeudi'], period='soir', label='Danse',
+        )
+        html = self.client.get(reverse('settings')).content.decode()
+        checked = {
+            m.group(1) for m in
+            re.finditer(r'name="task_days" value="(\w+)"\s+checked', html)
+        }
+        # Seul le formulaire de modification préremplit : le formulaire d'ajout reste vierge.
+        self.assertEqual(checked, {'mardi', 'jeudi'})
+
+    def test_empty_selection_is_refused_with_an_explicit_message(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fille', 'task_label': 'SansJour', 'task_period': 'matin',
+        })
+        self.assertFalse(CustomTask.objects.filter(family=self.family, label='SansJour').exists())
+        self.assertIn('au moins un jour', self._messages(resp)[-1])
+
+    def test_missing_label_message_names_the_label_not_the_days(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fille', 'task_days': ['lundi'], 'task_period': 'matin',
+        })
+        message = self._messages(resp)[-1]
+        self.assertIn('intitulé', message)
+        self.assertNotIn('au moins un jour', message)
+
+    def test_editing_to_an_empty_selection_keeps_the_previous_days(self):
+        task = CustomTask.objects.create(
+            family=self.family, person='fille', days=['lundi'], period='matin', label='Garder',
+        )
+        self.client.post(reverse('edit_custom_task', args=[task.id]), {
+            'task_person': 'fille', 'task_label': 'Garder', 'task_period': 'matin',
+        })
+        task.refresh_from_db()
+        self.assertEqual(task.days, ['lundi'])
 
 
 class DayModeStarNonPenalizationTests(TestCase):

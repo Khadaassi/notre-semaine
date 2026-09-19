@@ -24,9 +24,9 @@ from .models import (
     format_quantity, TASK_EXCEPTION_KIND_CHOICES, DayMode, DAY_MODE_CHOICES, PERSON_CHOICES,
 )
 from .task_logic import (
-    DAYS, DAY_FULL, tasks_for, next_day, pillar_for, is_zone_b_holiday, DEEP_CLEAN_ROOMS,
-    group_by_phase, apply_order, parse_free_time, split_by_exceptions, find_schedule_conflicts,
-    active_day_mode,
+    DAYS, DAY_FULL, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for, next_day, pillar_for,
+    is_zone_b_holiday, DEEP_CLEAN_ROOMS, group_by_phase, apply_order, parse_free_time,
+    split_by_exceptions, find_schedule_conflicts, active_day_mode,
 )
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
 
@@ -142,6 +142,30 @@ def _kids_people(settings):
 
 def _family_people(settings):
     return _kids_people(settings) + ['maman', 'papa']
+
+
+def _days_summary(days):
+    """Human recap of a CustomTask's recurrence, for the confirmation flash — the server-side
+    counterpart of the live summary in _day_picker.html. Recognises the same three shortcuts
+    (tous les jours / jours d'école / week-end) so the wording matches what was clicked."""
+    ordered = [d for d in DAYS if d in days]
+    if len(ordered) == len(DAYS):
+        return 'tous les jours'
+    if set(ordered) == set(SCHOOL_DAYS):
+        return "les jours d'école"
+    if set(ordered) == set(WEEKEND_DAYS):
+        return 'le week-end'
+    return ', '.join(ordered)
+
+
+def _custom_task_error(label, days):
+    """One explicit message per missing field, rather than a single catch-all — the day
+    picker can now be left empty by 'Personnaliser', so saying which half is missing matters."""
+    if not label and not days:
+        return "Merci d'indiquer un intitulé et de choisir au moins un jour."
+    if not label:
+        return "Merci d'indiquer un intitulé pour la tâche."
+    return "Merci de choisir au moins un jour pour cette tâche."
 
 
 def _wizard_banner(request, step, label, description, next_url=None, is_last=False):
@@ -980,9 +1004,9 @@ def settings_view(request):
                     period=request.POST.get('task_period', 'matin'),
                     label=label,
                 )
-                messages.success(request, "Tâche ajoutée.")
+                messages.success(request, f"Tâche ajoutée — {_days_summary(days_selected)}.")
             else:
-                messages.error(request, "Merci d'indiquer un intitulé et au moins un jour.")
+                messages.error(request, _custom_task_error(label, days_selected))
         elif 'save_rewards' in request.POST:
             try:
                 milestone = int(request.POST.get('star_milestone', settings.star_milestone))
@@ -1034,6 +1058,8 @@ def settings_view(request):
     return render(request, 'planner/settings.html', {
         'settings': settings, 'activities': activities, 'custom_tasks': custom_tasks,
         'days': DAYS, 'day_full': DAY_FULL, 'members': members, 'tablet_url': tablet_url,
+        # Raccourcis du sélecteur de jours : la liste vient de task_logic, jamais du template.
+        'school_days_csv': ','.join(SCHOOL_DAYS), 'weekend_days_csv': ','.join(WEEKEND_DAYS),
         'task_exceptions': task_exceptions, 'wizard': wizard,
     })
 
@@ -1202,9 +1228,9 @@ def edit_custom_task(request, pk):
             task.period = request.POST.get('task_period', task.period)
             task.days = days_selected
             task.save()
-            messages.success(request, "Tâche modifiée.")
+            messages.success(request, f"Tâche modifiée — {_days_summary(days_selected)}.")
         else:
-            messages.error(request, "Merci d'indiquer un intitulé et au moins un jour.")
+            messages.error(request, _custom_task_error(label, days_selected))
     return redirect('settings')
 
 

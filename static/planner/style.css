@@ -410,6 +410,36 @@ textarea{width:100%;border:2.5px solid var(--navy);border-radius:14px;padding:10
   color:var(--navy);display:inline-flex;align-items:center;gap:6px;margin:0 6px 6px 0;}
 
 /* ---- Édition d'une tâche personnalisée, repliée par défaut (réglages) ---- */
+/* ---- Sélecteur de jours (_day_picker.html) : 7 bascules tactiles + raccourcis ---- */
+.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0 0 0 0);white-space:nowrap;border:0;}
+.daypicker{flex:1 1 100%;min-width:0;}
+.daypicker-presets{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;}
+/* Sélecteurs à 3 classes : le picker vit dans un <form class="addrow">, dont la règle
+   `.addrow button{background:var(--mint-dk)}` teintait sinon tous les raccourcis en vert,
+   les faisant paraître actifs en permanence. */
+.daypicker .daypicker-presets .daypicker-preset{background:white;color:var(--navy);
+  border:2px solid var(--navy);border-radius:999px;padding:7px 13px;font-size:12px;font-weight:800;
+  font-family:var(--font-display);box-shadow:none;}
+.daypicker-preset::before{display:none;}
+.daypicker .daypicker-presets .daypicker-preset:hover{background:#fff6ea;transform:none;box-shadow:none;}
+.daypicker .daypicker-presets .daypicker-preset[aria-pressed="true"]{background:var(--plum);color:#fff;
+  border-color:var(--navy);box-shadow:2px 2px 0 var(--navy);}
+/* Grille plutôt que flex : toutes les bascules gardent la même largeur, y compris sur la
+   dernière rangée (en flex, sam/dim s'étiraient sur toute la largeur restante). */
+.daypicker-days{display:grid;grid-template-columns:repeat(auto-fit, minmax(48px, 1fr));gap:6px;}
+.daytoggle{position:relative;}
+.daytoggle input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;}
+.daytoggle-label{display:block;text-align:center;padding:11px 6px;border-radius:12px;
+  border:2.5px solid var(--navy);background:white;color:var(--navy);font-weight:800;font-size:13px;
+  text-transform:uppercase;letter-spacing:.02em;box-shadow:2px 2px 0 var(--navy);
+  transition:background .1s ease,transform .08s ease,box-shadow .08s ease;}
+.daytoggle input:checked + .daytoggle-label{background:var(--mint);color:#053b34;border-color:var(--mint-dk);}
+.daytoggle input:focus-visible + .daytoggle-label{outline:3px solid var(--plum);outline-offset:2px;}
+.daytoggle input:active + .daytoggle-label{transform:translate(2px,2px);box-shadow:none;}
+.daypicker-summary{margin:8px 0 0;font-size:12.5px;font-weight:800;color:var(--navy);}
+.daypicker-summary.empty{color:var(--coral-dk);}
+
 .edit-details{margin:-4px 0 10px;}
 .edit-details summary{cursor:pointer;font-weight:800;font-size:12px;color:var(--plum-dk);list-style:none;}
 .edit-details summary::-webkit-details-marker{display:none;}
