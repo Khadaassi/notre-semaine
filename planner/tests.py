@@ -24,6 +24,8 @@ from .task_logic import (
     is_zone_b_holiday, ZONE_B_HOLIDAYS, DAYS, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for,
     find_schedule_conflicts, occurs_on, activities_on, phase_for_time,
     custom_task_occurs_on, nth_weekday_of_month, is_last_weekday_of_month, days_summary,
+    CORAN_FULL_LABEL, CORAN_SUNDAY_LABEL, CORAN_LIGHT_LABEL,
+    DAY_MODE_ABSENCE_DROP_IDS, DAY_MODE_ALLEGEE_DROP_IDS,
 )
 from .views import (
     _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _level_for, _monday_of,
@@ -3318,3 +3320,57 @@ class MenuRowShrinkTests(TestCase):
         row = [line for line in css.splitlines() if line.startswith('.menurow select{')]
         self.assertTrue(row, "la règle .menurow select a disparu")
         self.assertIn('min-width:0', row[0])
+
+
+class CoranBusinessRuleTests(TestCase):
+    """Règle métier non négociable : le Coran a lieu tous les jours, sans exception, et n'est
+    allégé que si l'enfant est malade.
+
+    Le samedi affichait « révision légère » quel que soit le mode, ce qui contredisait la
+    règle : c'est désormais la version complète, comme les jours d'école. Seul le dimanche
+    garde sa formulation propre (« lecture »), et « révision légère » n'existe plus que pour
+    le mode allégé."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Coran', invite_code='CORANFA1')
+        self.settings = FamilySettings.load(self.family)
+        self.settings.nb_enfants = 2
+        self.settings.save()
+
+    def _coran(self, day, day_mode='normal'):
+        tasks = tasks_for('fille', day, self.settings, [], day_mode=day_mode)
+        found = [t for t in tasks if t['id'] == 'coran']
+        self.assertEqual(len(found), 1, f"le Coran doit apparaître une fois le {day} ({day_mode})")
+        return found[0]
+
+    def test_coran_is_present_every_single_day_in_every_mode(self):
+        for mode in ('normal', 'vacances', 'allegee', 'absence'):
+            for day in DAYS:
+                self._coran(day, mode)
+
+    def test_saturday_is_the_full_version_like_a_school_day(self):
+        self.assertEqual(self._coran('samedi')['label'], CORAN_FULL_LABEL)
+        self.assertEqual(self._coran('lundi')['label'], CORAN_FULL_LABEL)
+
+    def test_saturday_is_no_longer_a_light_revision_outside_sick_mode(self):
+        for mode in ('normal', 'vacances', 'absence'):
+            self.assertNotEqual(self._coran('samedi', mode)['label'], CORAN_LIGHT_LABEL)
+
+    def test_sunday_keeps_its_own_wording(self):
+        self.assertEqual(self._coran('dimanche')['label'], CORAN_SUNDAY_LABEL)
+
+    def test_only_the_sick_mode_lightens_it_and_it_does_so_every_day(self):
+        for day in DAYS:
+            self.assertEqual(self._coran(day, 'allegee')['label'], CORAN_LIGHT_LABEL)
+
+    def test_no_day_mode_ever_removes_it(self):
+        self.assertNotIn('coran', DAY_MODE_ABSENCE_DROP_IDS)
+        self.assertNotIn('coran', DAY_MODE_ALLEGEE_DROP_IDS)
+
+    def test_the_labels_live_in_one_place_so_the_days_cannot_drift(self):
+        import pathlib
+        source = (pathlib.Path(__file__).resolve().parent / 'task_logic.py').read_text()
+        # Une seule définition par libellé : les routines les référencent, ne les recopient pas.
+        self.assertEqual(source.count("'Coran — lecture & apprentissage (~1h)'"), 1)
+        self.assertEqual(source.count("'Coran — lecture'"), 1)
+        self.assertEqual(source.count("'Coran — révision légère'"), 1)
