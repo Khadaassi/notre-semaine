@@ -291,8 +291,12 @@ DAY_MODE_ABSENCE_DROP_IDS = {
 # chores and full homework, keep the rest of the routine as-is.
 DAY_MODE_ALLEGEE_DROP_IDS = {'devoirs', 'deepclean', 'lessive', 'frigo', 'draps', 'reset'}
 
-# Coran is never dropped by any DayMode — it's only ever shortened, and only on an 'allegee'
-# (sick) day. 'lit'/'coran' both use this pattern elsewhere for the lighter weekend phrasing.
+# Le Coran a lieu tous les jours, sans exception, et n'est jamais retiré par un mode de
+# journée : il n'est allégé que si l'enfant est malade (day_mode == 'allegee'). Les libellés
+# sont ici, en un seul endroit, pour que cette règle métier ne puisse pas diverger d'un jour
+# de la semaine à l'autre.
+CORAN_FULL_LABEL = 'Coran — lecture & apprentissage (~1h)'
+CORAN_SUNDAY_LABEL = 'Coran — lecture'
 CORAN_LIGHT_LABEL = 'Coran — révision légère'
 
 
@@ -386,7 +390,7 @@ def build_evening_school_like(kid, day, settings, activities, holiday_tomorrow=F
         t('priere1', 'Prière', 'soir'),
         t('gouter', 'Goûter sain', 'soir'),
         t('devoirs', 'Devoirs', 'soir'),
-        t('coran', 'Coran — lecture & apprentissage (~1h)', 'soir'),
+        t('coran', CORAN_FULL_LABEL, 'soir'),
     ]
     tasks += _own_activity_tasks(kid, day, activities, date)
     if douche_today(kid, day, activities, date):
@@ -440,7 +444,7 @@ def tasks_for_kid(kid, day, settings, activities, holiday_today=False, holiday_t
             t('chambre', 'Ranger sa chambre', 'matin'),
             t('chaussures', 'Ranger ses chaussures', 'matin'),
             t('linge', 'Plier et ranger son linge propre', 'matin'),
-            t('coran', 'Coran — révision légère', 'journée'),
+            t('coran', CORAN_FULL_LABEL, 'journée'),
         ]
         tasks += _weekend_rotation_tasks(kid, settings)
         tasks += _own_activity_tasks(kid, day, activities, date)
@@ -464,7 +468,7 @@ def tasks_for_kid(kid, day, settings, activities, holiday_today=False, holiday_t
         tasks += [
             t('panier', 'Vider le panier à linge sale', 'matin'),
             t('sac_semaine', 'Préparer le cartable / les affaires de la semaine', 'journée'),
-            t('coran', 'Coran — lecture', 'journée'),
+            t('coran', CORAN_SUNDAY_LABEL, 'journée'),
         ]
         tasks += _weekend_rotation_tasks(kid, settings)
         tasks += _own_activity_tasks(kid, day, activities, date)
