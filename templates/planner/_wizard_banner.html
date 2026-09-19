@@ -17,7 +17,8 @@ own ?wizard=1&step=N, nothing here duplicates the underlying page's logic.
   </div>
   <div class="wizard-banner-actions">
     {% if wizard.is_last %}
-      <a href="{% url 'wizard_start' %}?done=1" class="wizard-cta">Terminer le parcours ✓</a>
+      {# Plus de « Terminé ! » décrété : le bilan relit l'état réel de chaque étape. #}
+      <a href="{% url 'wizard_start' %}?week={{ week_param }}" class="wizard-cta">Voir le bilan →</a>
     {% else %}
       <a href="{{ wizard.next_url }}" class="wizard-cta">Étape suivante →</a>
       <a href="{{ wizard.next_url }}" class="wizard-skip">Passer cette étape</a>

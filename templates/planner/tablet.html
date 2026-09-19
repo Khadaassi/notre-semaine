@@ -4,7 +4,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="refresh" content="300">
 <title>Notre Semaine — Tablette</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -53,11 +52,40 @@
   <div class="card">
     <h2><span class="phase-icon icon-activite"></span>Prochains événements</h2>
     {% for a in upcoming %}
-      <div class="pill">{{ a.person_name }} — {{ a.label }} — {{ a.get_day_display }}{% if a.time_range_label %} {{ a.time_range_label }}{% endif %}</div>
+      <div class="pill">{{ a.person_name }} — {{ a.label }} — {{ a.day_label }}{% if a.time_range_label %} {{ a.time_range_label }}{% endif %}</div>
     {% empty %}
       <div class="hint">Aucun événement à venir.</div>
     {% endfor %}
   </div>
 </div>
+
+{% comment %}
+  Synchronisation légère. L'ancien <meta http-equiv="refresh" content="300"> rechargeait la
+  page toutes les cinq minutes quoi qu'il arrive : un clignotement régulier pour rien, et
+  jusqu'à cinq minutes de retard quand quelque chose changeait vraiment. On interroge
+  maintenant une empreinte de la journée toutes les 20 secondes et on ne recharge que si
+  elle a bougé — donc moins souvent et plus vite à la fois. Hors ligne, on garde
+  simplement l'affichage en place.
+{% endcomment %}
+<script>
+(function(){
+  const URL_ = "{{ digest_url }}?date={{ digest_date }}";
+  let current = "{{ digest }}";
+  let timer = null;
+
+  function check() {
+    fetch(URL_, {headers: {'X-Requested-With': 'fetch'}})
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(data => { if (data.digest && data.digest !== current) location.reload(); })
+      .catch(() => {});
+  }
+  function start(){ if (!timer) timer = setInterval(check, 20000); }
+  function stop(){ clearInterval(timer); timer = null; }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { stop(); } else { check(); start(); }
+  });
+  start();
+})();
+</script>
 </body>
 </html>

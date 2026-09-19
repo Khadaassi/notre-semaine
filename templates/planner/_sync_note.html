@@ -1,0 +1,49 @@
+{% comment %}
+  Synchronisation légère entre les écrans de la maison : la tablette de la cuisine, le
+  téléphone d'un parent et l'écran des enfants regardent la même journée.
+
+  Ici, on ne recharge JAMAIS tout seul : quelqu'un est peut-être en train de cocher, et lui
+  arracher sa page sous les doigts serait pire que l'écart qu'on corrige. On signale, et
+  c'est la personne qui décide. La tablette, elle, n'a personne devant : elle se recharge
+  seule (voir tablet.html).
+{% endcomment %}
+<div class="syncnote" data-syncnote hidden role="status" aria-live="polite">
+  <span class="row-icon icon-sync"></span>
+  <span>La journée a été modifiée sur un autre écran.</span>
+  <button type="button" data-sync-reload>Actualiser</button>
+</div>
+<script>
+(function(){
+  const note = document.querySelector('[data-syncnote]');
+  if (!note) return;
+  const URL_ = "{% url 'day_digest' %}?date={{ digest_date }}";
+  let current = "{{ digest }}";
+  let timer = null;
+
+  function check() {
+    fetch(URL_, {headers: {'X-Requested-With': 'fetch'}})
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(data => { if (data.digest && data.digest !== current) note.hidden = false; })
+      .catch(() => {});   // hors ligne : on ne signale rien plutôt que d'alarmer à tort
+  }
+
+  note.querySelector('[data-sync-reload]').addEventListener('click', () => location.reload());
+
+  /* Après une action de CETTE page, l'empreinte a changé de notre fait : on la réaligne
+     pour ne pas s'annoncer à soi-même un changement qu'on vient de faire. */
+  window.nsSyncAck = function(){ note.hidden = true; current = null; check2(); };
+  function check2() {
+    fetch(URL_, {headers: {'X-Requested-With': 'fetch'}})
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(data => { current = data.digest; note.hidden = true; })
+      .catch(() => {});
+  }
+
+  function start(){ if (!timer) timer = setInterval(check, 20000); }
+  function stop(){ clearInterval(timer); timer = null; }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { stop(); } else { check(); start(); }
+  });
+  start();
+})();
+</script>

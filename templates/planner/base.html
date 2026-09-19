@@ -51,8 +51,13 @@
   {% endif %}
 
   {% if user.is_authenticated %}
+  {% include "planner/_reminders.html" %}
   <nav class="tabs">
-    <a href="{% url 'today' %}" class="{% if request.resolver_match.url_name == 'today' %}active{% endif %}">
+    {% comment %}
+      La routine guidée est une vue de la journée en cours : pas un 7e onglet qui serrerait
+      la barre sur téléphone, mais un état de l'onglet « Aujourd'hui ».
+    {% endcomment %}
+    <a href="{% url 'today' %}" class="{% if request.resolver_match.url_name == 'today' or request.resolver_match.url_name == 'routine' %}active{% endif %}">
       <span class="nav-icon icon-today"></span><span class="nav-label">Aujourd'hui</span></a>
     <a href="{% url 'week' %}" class="{% if request.resolver_match.url_name == 'week' %}active{% endif %}">
       <span class="nav-icon icon-organisation"></span><span class="nav-label">Organisation</span></a>
@@ -90,5 +95,90 @@
 
   {% block content %}{% endblock %}
 </div>
+
+{% if user.is_authenticated %}
+<script>
+/* Rappels de routine — entièrement dans l'application.
+   La page interroge le serveur chaque minute pour qu'un rappel apparaisse à son heure sans
+   rechargement. C'est tout ce que ce système fait : quand l'app est fermée, rien ne part,
+   et c'est écrit tel quel dans les réglages. L'heure de référence est celle du serveur en
+   Europe/Paris, jamais celle de l'appareil, pour que les deux écrans de la maison
+   s'accordent même si une tablette est mal réglée. */
+(function(){
+  const box = document.querySelector('[data-reminders]');
+  if (!box) return;
+  const CSRF = "{{ csrf_token }}";
+  const ROUTINE_URL = "{% url 'routine' %}";
+  let timer = null;
+
+  function draw(list) {
+    box.innerHTML = '';
+    list.forEach(rem => {
+      const row = document.createElement('div');
+      row.className = 'reminder';
+      row.dataset.reminder = rem.id;
+
+      const icon = document.createElement('span');
+      icon.className = 'rem-icon ' + rem.person;
+      icon.innerHTML = '<span class="row-icon icon-cloche"></span>';
+
+      const text = document.createElement('span');
+      text.className = 'rem-text';
+      const strong = document.createElement('strong');
+      strong.textContent = rem.label;
+      const sub = document.createElement('span');
+      sub.className = 'rem-sub';
+      sub.textContent = rem.at_time + ' — il reste ' + rem.remaining +
+        ' tâche' + (rem.remaining > 1 ? 's' : '');
+      text.append(strong, sub);
+
+      const actions = document.createElement('span');
+      actions.className = 'rem-actions';
+      const go = document.createElement('a');
+      go.className = 'rem-go';
+      go.href = ROUTINE_URL;
+      go.textContent = 'Y aller';
+      const later = document.createElement('button');
+      later.type = 'button';
+      later.className = 'rem-later';
+      later.dataset.snooze = rem.id;
+      later.textContent = 'Plus tard';
+      actions.append(go, later);
+
+      row.append(icon, text, actions);
+      box.appendChild(row);
+    });
+    box.hidden = list.length === 0;
+  }
+
+  function refresh() {
+    fetch("{% url 'reminders_json' %}", {headers: {'X-Requested-With': 'fetch'}})
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(data => draw(data.reminders || []))
+      .catch(() => {});   // hors ligne : on garde simplement l'affichage précédent
+  }
+
+  box.addEventListener('click', e => {
+    const btn = e.target.closest('[data-snooze]');
+    if (!btn) return;
+    btn.disabled = true;
+    const fd = new FormData();
+    fd.append('reminder_id', btn.dataset.snooze);
+    fetch("{% url 'snooze_reminder' %}", {method: 'POST', headers: {'X-CSRFToken': CSRF}, body: fd})
+      .then(() => refresh())
+      .catch(() => { btn.disabled = false; });
+  });
+
+  /* On ne compte pas les minutes en arrière-plan : un onglet caché ne sert à personne, et
+     au retour on veut l'état réel tout de suite plutôt qu'au prochain tour d'horloge. */
+  function start(){ if (!timer) timer = setInterval(refresh, 60000); }
+  function stop(){ clearInterval(timer); timer = null; }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { stop(); } else { refresh(); start(); }
+  });
+  start();
+})();
+</script>
+{% endif %}
 </body>
 </html>

@@ -1,3 +1,4 @@
+import datetime
 import secrets
 from decimal import Decimal, InvalidOperation
 
@@ -70,6 +71,37 @@ class FamilySettings(models.Model):
     # Long, unguessable slug for the unauthenticated read-only kitchen tablet display
     # (see views.tablet_view) — generated once in `load()`, regenerable from settings.
     tablet_token = models.CharField(max_length=64, blank=True, default='')
+    # Rappels de routine (voir RoutineReminder). Interrupteur global de la famille + plage
+    # de calme pendant laquelle aucun rappel ne s'affiche, même si son heure est passée.
+    # Les heures sont interprétées en heure locale Django (Europe/Paris), jamais en heure
+    # système du serveur — voir views._now().
+    # Nombre de couverts habituel de la maison : référence par défaut pour les portions
+    # d'un repas (voir WeeklyMenuEntry.servings_target).
+    household_servings = models.PositiveIntegerField(
+        default=4, help_text="Nombre de personnes à table habituellement."
+    )
+    reminders_enabled = models.BooleanField(
+        default=True, help_text="Afficher les rappels de routine des enfants dans l'application."
+    )
+    quiet_start = models.TimeField(
+        default=datetime.time(20, 30), help_text="Début de la plage sans rappel (le soir)."
+    )
+    quiet_end = models.TimeField(
+        default=datetime.time(7, 0), help_text="Fin de la plage sans rappel (le matin)."
+    )
+
+    def in_quiet_hours(self, value):
+        """Plage de calme, éventuellement à cheval sur minuit (20 h 30 -> 7 h).
+
+        Si les deux bornes sont égales, la plage est vide : on considère qu'il n'y a pas
+        d'heures calmes, plutôt qu'un silence permanent qui rendrait les rappels invisibles
+        sans que personne comprenne pourquoi."""
+        start, end = self.quiet_start, self.quiet_end
+        if start == end:
+            return False
+        if start < end:
+            return start <= value < end
+        return value >= start or value < end
 
     class Meta:
         verbose_name = "Réglages famille"
@@ -214,6 +246,12 @@ class Recipe(models.Model):
     # List of step description strings, in order.
     steps = models.JSONField(default=list, blank=True)
     is_favorite = models.BooleanField(default=False)
+    # Nombre de personnes que servent les quantités saisies ci-dessus. Sans cette référence,
+    # « doubler les portions » ne veut rien dire : c'est le dénominateur de toute mise à
+    # l'échelle (voir scaled_ingredients et WeeklyMenuEntry.servings_target).
+    servings = models.PositiveIntegerField(
+        default=4, help_text="Nombre de personnes servies par les quantités indiquées."
+    )
 
     class Meta:
         ordering = ['category', 'name']
@@ -247,6 +285,36 @@ class Recipe(models.Model):
         """This recipe's ingredients, normalized (see normalize_ingredients)."""
         return Recipe.normalize_ingredients(self.ingredients)
 
+    def scale_factor(self, target_servings):
+        """Coefficient pour passer des quantités saisies à `target_servings` personnes.
+
+        Renvoie 1 quand la recette ne dit pas pour combien elle est prévue, ou quand la
+        cible est inconnue : mieux vaut afficher la quantité d'origine que d'inventer une
+        mise à l'échelle sur une base fausse."""
+        if not self.servings or not target_servings:
+            return Decimal('1')
+        return Decimal(str(target_servings)) / Decimal(str(self.servings))
+
+    def scaled_ingredients(self, target_servings):
+        """Ingrédients ramenés à `target_servings` personnes.
+
+        Un ingrédient sans quantité (« Sel », « Persil ») reste sans quantité : on ne le
+        multiplie pas par un nombre qu'on n'a pas. Les quantités sont arrondies à 0,01
+        près pour éviter les 166,66666 g, et présentées via format_quantity."""
+        factor = self.scale_factor(target_servings)
+        out = []
+        for ing in self.ingredients_list():
+            qty = ing['quantity']
+            if qty in (None, ''):
+                scaled = None
+            else:
+                try:
+                    scaled = (Decimal(str(qty)) * factor).quantize(Decimal('0.01'))
+                except (InvalidOperation, ValueError, TypeError):
+                    scaled = None
+            out.append({'name': ing['name'], 'quantity': scaled, 'unit': ing['unit']})
+        return out
+
     def ingredients_display(self):
         """Human-readable 'Name — qty unit' strings, for tag-row templates."""
         out = []
@@ -261,6 +329,22 @@ class Recipe(models.Model):
                 label += f" — {ing['unit']}"
             out.append(label)
         return out
+
+    @classmethod
+    def aggregate_scaled(cls, portions):
+        """Comme aggregate_ingredients, mais chaque recette est d'abord ramenée au nombre
+        de personnes réellement prévu ce soir-là.
+
+        `portions` est une suite de (recette, nombre de personnes). Deux repas de la même
+        recette, pour des nombres de couverts différents, s'additionnent correctement —
+        c'est ce qui permet à « cuisiner pour deux repas » de peser deux fois dans les
+        courses sans qu'on ait à saisir la recette deux fois."""
+        scaled = []
+        for recipe, servings in portions:
+            clone = cls(name=recipe.name)
+            clone.ingredients = recipe.scaled_ingredients(servings)
+            scaled.append(clone)
+        return cls.aggregate_ingredients(scaled)
 
     @classmethod
     def aggregate_ingredients(cls, recipes):
@@ -305,16 +389,35 @@ class Recipe(models.Model):
 
 
 class WeeklyMenuEntry(models.Model):
+    """Un repas du soir, pour un jour d'une semaine.
+
+    Trois cas, et un seul à la fois : un plat cuisiné (recipe), des restes d'un autre jour
+    (leftovers_from), ou rien. Les restes sont un vrai cas du quotidien, pas une absence de
+    repas : marquer un jour « restes » veut dire qu'on ne cuisine pas et surtout qu'on
+    n'achète rien pour ce jour-là — c'est ce qui évite d'acheter deux fois les ingrédients
+    d'un plat qu'on a fait en double."""
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     week_start = models.DateField()
     day = models.CharField(max_length=10, choices=DAY_CHOICES)
     recipe = models.ForeignKey(Recipe, on_delete=models.SET_NULL, null=True, blank=True)
+    # Nombre de personnes à table ce soir-là. NULL = on suit le réglage de la famille.
+    servings = models.PositiveIntegerField(null=True, blank=True)
+    # Jour dont ce repas reprend les restes. Renseigné => pas de cuisine, pas de courses.
+    leftovers_from = models.CharField(max_length=10, choices=DAY_CHOICES, blank=True, default='')
 
     class Meta:
         unique_together = ('family', 'week_start', 'day')
 
     def __str__(self):
+        if self.leftovers_from:
+            return f"{self.week_start} {self.day}: restes de {self.leftovers_from}"
         return f"{self.week_start} {self.day}: {self.recipe}"
+
+    def is_leftovers(self):
+        return bool(self.leftovers_from)
+
+    def servings_target(self, family_default):
+        return self.servings or family_default
 
 
 PHASE_CHOICES = [('matin', 'Matin'), ('journee', 'Journée'), ('soir', 'Soir')]
@@ -323,16 +426,58 @@ PHASE_CHOICES = [('matin', 'Matin'), ('journee', 'Journée'), ('soir', 'Soir')]
 DAY_LABELS = dict(DAY_CHOICES)
 
 
+CUSTOM_TASK_FREQUENCIES = [
+    ('weekly', 'Toutes les semaines'),
+    ('biweekly', 'Une semaine sur deux'),
+    ('monthly', 'Une fois par mois'),
+    ('once', 'Une seule fois'),
+]
+
+MONTHLY_NTH_CHOICES = [
+    (1, 'Le 1er'), (2, 'Le 2e'), (3, 'Le 3e'), (4, 'Le 4e'), (-1, 'Le dernier'),
+]
+
+
 class CustomTask(models.Model):
     """A task added from the UI, on top of the built-in routine — same shape (person,
     a time-of-day slot), rendered alongside the built-in tasks in 'Aujourd'hui'. `days` is
-    the list of weekday keys it recurs on (its "frequency") — replaces the old single-day
-    `day` field (see the 0015-0017 migrations for the day -> days conversion)."""
+    the list of weekday keys it recurs on — replaces the old single-day `day` field (see the
+    0015-0017 migrations for the day -> days conversion).
+
+    `frequency` raffine cette récurrence hebdomadaire, sans la remplacer : `days` dit
+    toujours QUELS jours, la fréquence dit QUELLES semaines (voir
+    task_logic.custom_task_occurs_on, qui porte toute la règle) :
+      - weekly   : ces jours-là, toutes les semaines (comportement historique, défaut) ;
+      - biweekly : une semaine sur deux, comptée depuis `anchor_week` ;
+      - monthly  : le Nième jour du mois (`monthly_nth`, -1 = le dernier) ;
+      - once     : une seule date (`specific_date`), puis plus rien.
+    """
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     person = models.CharField(max_length=10, choices=PERSON_CHOICES)
     days = models.JSONField(default=list, blank=True)
     period = models.CharField(max_length=10, choices=PHASE_CHOICES, default='matin')
     label = models.CharField(max_length=150)
+    frequency = models.CharField(max_length=10, choices=CUSTOM_TASK_FREQUENCIES, default='weekly')
+    # biweekly : lundi de la semaine de référence, celle où la tâche a lieu.
+    anchor_week = models.DateField(null=True, blank=True)
+    # monthly : 1 à 4, ou -1 pour « le dernier » de ce jour dans le mois.
+    monthly_nth = models.IntegerField(choices=MONTHLY_NTH_CHOICES, null=True, blank=True)
+    # once : la date unique.
+    specific_date = models.DateField(null=True, blank=True)
+
+    def frequency_display(self):
+        """Phrase lisible qui dit la même chose que custom_task_occurs_on — c'est ce texte
+        que l'utilisateur voit dans les réglages, il ne doit jamais diverger de la règle."""
+        from .task_logic import DAY_FULL, days_summary
+        if self.frequency == 'once':
+            return f"le {self.specific_date:%d/%m/%Y}" if self.specific_date else "une seule fois"
+        if self.frequency == 'monthly':
+            rank = dict(MONTHLY_NTH_CHOICES).get(self.monthly_nth, 'Le 1er')
+            jours = ', '.join(DAY_FULL.get(d, d).lower() for d in (self.days or []))
+            return f"{rank.lower()} {jours} du mois" if jours else rank.lower()
+        if self.frequency == 'biweekly':
+            return f"une semaine sur deux, {days_summary(self.days)}"
+        return days_summary(self.days)
 
     class Meta:
         ordering = ['period', 'id']
@@ -404,6 +549,30 @@ class DayMode(models.Model):
         return f"{self.person} {self.date}: {self.mode}"
 
 
+class HelpRequest(models.Model):
+    """« Besoin d'aide » levé par un enfant pendant la routine guidée, pour une tâche et un
+    jour donnés.
+
+    Volontairement à part de la progression : celle-ci reste entièrement portée par
+    TaskCompletion (une seule source, partagée avec la checklist). Ce drapeau ne fait
+    qu'afficher un état visible dans l'espace de l'enfant concerné — il ne bloque pas
+    l'autre enfant et ne déclenche aucune notification externe. Résolu (active=False) dès
+    que l'aide est arrivée ou que la tâche est validée."""
+    family = models.ForeignKey(Family, on_delete=models.CASCADE)
+    person = models.CharField(max_length=10, choices=PERSON_CHOICES)
+    date = models.DateField()
+    task_id = models.CharField(max_length=60)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('family', 'person', 'date', 'task_id')
+        indexes = [models.Index(fields=['family', 'date', 'active'])]
+
+    def __str__(self):
+        return f"{self.person} {self.date} {self.task_id} aide={'oui' if self.active else 'non'}"
+
+
 class GroceryItem(models.Model):
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     name = models.CharField(max_length=150)
@@ -415,6 +584,10 @@ class GroceryItem(models.Model):
     already_home = models.BooleanField(default=False)
     quantity = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
     unit = models.CharField(max_length=20, blank=True, default='')
+    # Lundi de la semaine dont ce produit vient (transfert menu → courses). NULL = produit
+    # habituel ou ajout manuel, qui n'appartient à aucune semaine et n'est donc jamais
+    # remplacé ni supprimé quand on régénère les courses d'une autre semaine.
+    week_start = models.DateField(null=True, blank=True)
 
     class Meta:
         ordering = ['category', 'name']
@@ -422,8 +595,93 @@ class GroceryItem(models.Model):
     def __str__(self):
         return self.name
 
+    def is_week_item(self):
+        return self.week_start is not None
+
     def quantity_display(self):
         text = format_quantity(self.quantity)
         if text and self.unit:
             return f"{text} {self.unit}"
         return text or self.unit
+
+
+REMINDER_PHASE_CHOICES = PHASE_CHOICES
+
+
+class RoutineReminder(models.Model):
+    """Un rappel de routine pour UN enfant, à une heure et sur des jours choisis.
+
+    Rappel *dans l'application*, et rien d'autre : il s'affiche sur « Aujourd'hui » et sur
+    la routine guidée quand l'heure locale est passée et que la routine visée n'est pas
+    finie. Aucun SMS, aucune notification push, aucun service externe — c'est une limite
+    assumée, écrite noir sur blanc dans les réglages pour que personne ne compte dessus
+    pour être prévenu quand l'app est fermée.
+
+    Réservé aux enfants (`person` dans fille/fils) : les parents organisent leur journée
+    eux-mêmes, et l'écran des enfants est le seul où un rappel a un sens pédagogique.
+
+    `acked_on` porte la mise en sourdine du jour (« Plus tard ») : une seule date sur la
+    ligne, donc pas de table d'accusés qui grossirait à chaque jour et à chaque rappel.
+    """
+    family = models.ForeignKey(Family, on_delete=models.CASCADE)
+    person = models.CharField(max_length=10, choices=PERSON_CHOICES)
+    phase = models.CharField(max_length=10, choices=REMINDER_PHASE_CHOICES, default='matin')
+    at_time = models.TimeField()
+    days = models.JSONField(default=list, blank=True)
+    label = models.CharField(max_length=120, blank=True, default='')
+    active = models.BooleanField(default=True)
+    # Jour où le rappel a été mis en sourdine depuis l'écran ; il repart tout seul le lendemain.
+    acked_on = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['at_time', 'person', 'id']
+        indexes = [models.Index(fields=['family', 'active'])]
+
+    def __str__(self):
+        return f"{self.person} {self.phase} {self.at_time:%H:%M} ({self.days_display()})"
+
+    def days_display(self):
+        return ', '.join(DAY_LABELS.get(d, d) for d in self.days)
+
+    def phase_display(self):
+        return dict(REMINDER_PHASE_CHOICES).get(self.phase, self.phase)
+
+    def default_label(self, person_name):
+        return f"Routine du {self.phase_display().lower()} de {person_name}"
+
+    def occurs_on_day(self, day):
+        return day in (self.days or [])
+
+
+class Checklist(models.Model):
+    """Une liste type, réutilisable : « Sac de piscine », « Départ en vacances », « Rentrée ».
+
+    C'est un modèle, pas un troisième système de tâches. L'appliquer crée de vraies
+    CustomTask, qui passent ensuite par tout ce qui existe déjà — ordre personnalisé,
+    exceptions, réattributions, complétion, étoiles. Rien de nouveau à maintenir en
+    parallèle, et une tâche issue d'une checklist se corrige ou se supprime comme les
+    autres.
+
+    Conséquence assumée : modifier la checklist plus tard ne retouche pas les tâches déjà
+    créées. C'est ce qu'on veut — sinon changer un modèle réécrirait des journées passées.
+    """
+    family = models.ForeignKey(Family, on_delete=models.CASCADE)
+    name = models.CharField(max_length=100)
+    # Liste de libellés, dans l'ordre : ce sont eux qui deviendront des tâches.
+    items = models.JSONField(default=list, blank=True)
+    person = models.CharField(max_length=10, choices=PERSON_CHOICES, default='fille')
+    period = models.CharField(max_length=10, choices=PHASE_CHOICES, default='matin')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return f"{self.name} ({len(self.items or [])} éléments)"
+
+    def items_list(self):
+        return [str(i).strip() for i in (self.items or []) if str(i).strip()]
+
+    def item_count(self):
+        return len(self.items_list())

@@ -79,6 +79,8 @@ class RecipeForm(forms.ModelForm):
         label="Ingrédients (ex : Poulet 500g, Riz 200g, Citron)", required=True,
         widget=forms.TextInput(attrs={'placeholder': 'Poulet 500g, Riz 200g, Citron...'})
     )
+    # Les quantités saisies valent « pour N personnes » : sans ce N, doubler les portions
+    # ou recalculer une recette pour six n'a aucune base de départ.
     steps_text = forms.CharField(
         label="Étapes (une par ligne, facultatif)", required=False,
         widget=forms.Textarea(attrs={
@@ -88,20 +90,35 @@ class RecipeForm(forms.ModelForm):
 
     class Meta:
         model = Recipe
-        fields = ['name', 'category', 'photo', 'duration_minutes', 'is_favorite']
+        fields = ['name', 'category', 'photo', 'duration_minutes', 'servings', 'is_favorite']
         labels = {
             'name': 'Nom', 'category': 'Catégorie', 'photo': 'Photo',
             'duration_minutes': 'Durée (minutes)', 'is_favorite': 'Recette favorite',
+            'servings': 'Pour combien de personnes',
         }
         widgets = {
             'duration_minutes': forms.NumberInput(attrs={'min': 0, 'placeholder': '30'}),
+            'servings': forms.NumberInput(attrs={'min': 1, 'max': 50, 'placeholder': '4'}),
         }
+
+    # Valeur par défaut des portions quand la case est laissée vide : une recette n'a pas
+    # à déclarer pour combien elle est prévue pour être enregistrée.
+    DEFAULT_SERVINGS = 4
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.order_fields(
-            ['name', 'category', 'photo', 'duration_minutes', 'ingredients_text', 'steps_text', 'is_favorite']
+        self.fields['servings'].required = False
+        self.fields['servings'].help_text = (
+            "Sert de référence pour recalculer les quantités. Par défaut : "
+            f"{self.DEFAULT_SERVINGS} personnes."
         )
+        self.order_fields(
+            ['name', 'category', 'photo', 'duration_minutes', 'servings',
+             'ingredients_text', 'steps_text', 'is_favorite']
+        )
+
+    def clean_servings(self):
+        return self.cleaned_data.get('servings') or self.DEFAULT_SERVINGS
 
     def save(self, commit=True):
         recipe = super().save(commit=False)

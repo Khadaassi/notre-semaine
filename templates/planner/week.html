@@ -28,6 +28,12 @@
     <button type="submit" class="duplicate-btn">Dupliquer le menu → semaine suivante</button>
   </form>
 
+  {# La semaine affichée suit l'utilisateur sur les écrans menu et courses. #}
+  <div class="week-jump">
+    <a href="{% url 'menu' %}?week={{ week_start|date:'Y-m-d' }}">Menus de cette semaine →</a>
+    <a href="{% url 'maison' %}?week={{ week_start|date:'Y-m-d' }}">Courses de cette semaine →</a>
+  </div>
+
   <div class="week-desktop" style="overflow-x:auto">
     <table class="weekgrid">
       <tr><th>Jour</th>{% for h in day_headers %}<th>{{ h }}</th>{% endfor %}</tr>

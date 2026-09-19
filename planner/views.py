@@ -1,6 +1,8 @@
 import datetime
+import hashlib
 import functools
 import json
+from urllib.parse import urlencode
 from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
@@ -8,9 +10,9 @@ from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LoginView
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
+from django.db import models, transaction
 from django.http import Http404, JsonResponse
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -22,11 +24,15 @@ from .models import (
     FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem,
     CustomTask, FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars, TaskException,
     format_quantity, TASK_EXCEPTION_KIND_CHOICES, DayMode, DAY_MODE_CHOICES, PERSON_CHOICES,
+    HelpRequest, RoutineReminder, REMINDER_PHASE_CHOICES, Checklist,
+    CUSTOM_TASK_FREQUENCIES, MONTHLY_NTH_CHOICES, PHASE_CHOICES,
 )
 from .task_logic import (
-    DAYS, DAY_FULL, tasks_for, next_day, pillar_for, is_zone_b_holiday, DEEP_CLEAN_ROOMS,
-    group_by_phase, apply_order, parse_free_time, split_by_exceptions, find_schedule_conflicts,
-    active_day_mode,
+    DAYS, DAY_FULL, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for, next_day, pillar_for,
+    is_zone_b_holiday, DEEP_CLEAN_ROOMS, group_by_phase, apply_order, parse_free_time,
+    split_by_exceptions, find_schedule_conflicts, active_day_mode, activities_on,
+    days_summary, custom_task_occurs_on,
+    phase_for_time,
 )
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
 
@@ -93,27 +99,36 @@ def _can_act_on(request, person):
     return person in ('fille', 'fils')
 
 
+def _today():
+    """La date « aujourd'hui » de la famille, en heure locale Django (Europe/Paris).
+
+    À ne jamais remplacer par datetime.date.today(), qui suit l'horloge système du serveur :
+    en production celle-ci est en UTC, donc entre minuit et 2 h du matin à Paris elle renvoie
+    encore la veille — la journée de l'enfant changerait avec une ou deux heures de retard."""
+    return timezone.localdate()
+
+
+def _now():
+    """L'heure locale de la famille (Europe/Paris), naïve, pour comparer aux heures saisies
+    dans l'app (début d'activité, plage horaire) qui sont elles aussi locales et naïves."""
+    return timezone.localtime().replace(tzinfo=None)
+
+
 def _monday_of(d):
     return d - datetime.timedelta(days=d.weekday())
 
 
 def _real_date_for_day(day):
-    today_idx = datetime.date.today().weekday()
-    return datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
+    today_idx = _today().weekday()
+    return _today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
 
 
 def _current_phase_now(now_time):
-    """Maps a wall-clock time to one of the 3 accordion phases used on 'Aujourd'hui'
-    (see group_by_phase in task_logic.py): before 12h00 = matin, 12h00–18h00 = journée,
-    18h00 onward = soir. A simple, deliberately time-of-day-only split — it has no relation
-    to any one family member's actual school/work hours (which vary by day and person, see
-    task_logic.is_bureau_day etc.) and isn't meant to be precise, just a reasonable default
-    for which accordion panel opens automatically."""
-    if now_time < datetime.time(12, 0):
-        return 'matin'
-    if now_time < datetime.time(18, 0):
-        return 'journee'
-    return 'soir'
+    """Which accordion phase opens by default on 'Aujourd'hui'. Delegates to
+    task_logic.phase_for_time so the same cut-offs decide where a timed activity is slotted
+    — one rule, not two that can drift. Deliberately time-of-day only: it has no relation to
+    any one family member's school/work hours (see task_logic.is_bureau_day etc.)."""
+    return phase_for_time(now_time)
 
 
 def _ensure_seed_data(family):
@@ -144,6 +159,65 @@ def _family_people(settings):
     return _kids_people(settings) + ['maman', 'papa']
 
 
+# La formulation vit avec la règle, dans task_logic : les modèles la réutilisent aussi.
+_days_summary = days_summary
+
+
+def _read_frequency(request, prefix='task'):
+    """Lit les champs de fréquence d'un formulaire de tâche personnalisée.
+
+    Renvoie (defaults, erreur). Chaque fréquence a besoin d'une information de plus, et on
+    refuse plutôt que de deviner : une tâche « une semaine sur deux » sans semaine de
+    référence ou « une seule fois » sans date ne veut rien dire, et se rabattre en silence
+    sur l'hebdomadaire ferait apparaître la tâche bien plus souvent que demandé."""
+    frequency = request.POST.get(f'{prefix}_frequency', 'weekly')
+    if frequency not in dict(CUSTOM_TASK_FREQUENCIES):
+        frequency = 'weekly'
+    defaults = {
+        'frequency': frequency, 'anchor_week': None,
+        'monthly_nth': None, 'specific_date': None,
+    }
+
+    if frequency == 'once':
+        raw = request.POST.get(f'{prefix}_date', '').strip()
+        try:
+            defaults['specific_date'] = datetime.date.fromisoformat(raw)
+        except ValueError:
+            return None, "Choisissez une date pour une tâche ponctuelle."
+
+    elif frequency == 'biweekly':
+        raw = request.POST.get(f'{prefix}_anchor', '').strip()
+        if raw:
+            try:
+                anchor = datetime.date.fromisoformat(raw)
+            except ValueError:
+                return None, "Semaine de référence invalide."
+        else:
+            anchor = _today()
+        defaults['anchor_week'] = _monday_of(anchor)
+
+    elif frequency == 'monthly':
+        try:
+            nth = int(request.POST.get(f'{prefix}_nth', 1))
+        except (TypeError, ValueError):
+            nth = 1
+        if nth not in dict(MONTHLY_NTH_CHOICES):
+            nth = 1
+        defaults['monthly_nth'] = nth
+
+    return defaults, None
+
+
+def _custom_task_error(label, days):
+    """One explicit message per missing field, rather than a single catch-all — the day
+    picker can now be left empty by 'Personnaliser', so saying which half is missing matters."""
+    if not label and not days:
+        return "Merci d'indiquer un intitulé et de choisir au moins un jour."
+    if not label:
+        return "Merci d'indiquer un intitulé pour la tâche."
+    return "Merci de choisir au moins un jour pour cette tâche."
+
+
 def _wizard_banner(request, step, label, description, next_url=None, is_last=False):
     """Builds the progress-banner context for one screen of the 'Préparer notre semaine'
     wizard (Lot 5b), active only when the URL carries ?wizard=1 (see wizard_start below).
@@ -156,6 +230,101 @@ def _wizard_banner(request, step, label, description, next_url=None, is_last=Fal
         'step': step, 'total': 4, 'label': label, 'description': description,
         'next_url': next_url, 'is_last': is_last,
     }
+
+
+def _week_preparation(family, settings, week_start):
+    """État réel de préparation d'une semaine, calculé à partir des données.
+
+    Le parcours guidé ne décide pas qu'une semaine est prête parce qu'on a cliqué quatre
+    fois : chaque étape est relue dans la base pour la semaine concernée. Passer sur un
+    écran sans rien y changer laisse donc l'étape « à faire », et une semaine préparée le
+    mois dernier reste prête même si personne n'a rouvert le parcours.
+
+    Trois états seulement : 'vide' (rien), 'partiel' (commencé, incomplet), 'ok'. Une étape
+    qui n'a pas de notion de « complet » — les événements, la répartition — n'est jamais
+    'partiel' pour rien : elle signale ce qui mérite un regard (un conflit d'horaires) et
+    s'en tient là."""
+    week_end = week_start + datetime.timedelta(days=6)
+    activities = list(Activity.objects.filter(family=family))
+
+    # 1. Événements : ceux qui tombent réellement dans la semaine, règle occurs_on partagée.
+    week_dates = [week_start + datetime.timedelta(days=i) for i in range(7)]
+    events = [a for d in week_dates for a in activities_on(activities, d)]
+    conflicts = set()
+    for d in week_dates:
+        conflicts |= find_schedule_conflicts(activities_on(activities, d))
+
+    if not events:
+        events_state, events_detail = 'vide', "Aucun événement noté cette semaine."
+    elif conflicts:
+        events_state = 'partiel'
+        events_detail = (f"{len(events)} événement{'s' if len(events) > 1 else ''}, "
+                         f"dont {len(conflicts)} en conflit d'horaires.")
+    else:
+        events_state = 'ok'
+        events_detail = f"{len(events)} événement{'s' if len(events) > 1 else ''} placé{'s' if len(events) > 1 else ''}."
+
+    # 2. Répartition : exceptions et réattributions posées pour les jours de la semaine.
+    overrides = TaskException.objects.filter(
+        family=family, active=True, date__gte=week_start, date__lte=week_end
+    ).count()
+    custom = CustomTask.objects.filter(family=family).count()
+    if overrides:
+        tasks_state = 'ok'
+        tasks_detail = f"{overrides} ajustement{'s' if overrides > 1 else ''} pour cette semaine."
+    elif custom:
+        tasks_state = 'ok'
+        tasks_detail = (f"{custom} tâche{'s' if custom > 1 else ''} personnalisée"
+                        f"{'s' if custom > 1 else ''} en place, aucun ajustement cette semaine.")
+    else:
+        tasks_state = 'vide'
+        tasks_detail = "Routine de base, sans tâche personnalisée ni ajustement."
+
+    # 3. Menus : un plat par jour, sur les sept jours de la semaine choisie.
+    filled = set(
+        WeeklyMenuEntry.objects.filter(family=family, week_start=week_start, recipe__isnull=False)
+        .values_list('day', flat=True)
+    )
+    missing = [d for d in DAYS if d not in filled]
+    if not filled:
+        menu_state, menu_detail = 'vide', "Aucun repas choisi pour cette semaine."
+    elif missing:
+        menu_state = 'partiel'
+        menu_detail = f"{len(filled)} jour{'s' if len(filled) > 1 else ''} sur 7 — manque {_days_summary(missing)}."
+    else:
+        menu_state, menu_detail = 'ok', "Les 7 repas du soir sont choisis."
+
+    # 4. Courses : la liste issue de cette semaine précisément (les produits habituels,
+    # sans semaine, ne comptent pas — sinon la liste paraîtrait toujours faite).
+    week_items = list(GroceryItem.objects.filter(family=family, week_start=week_start))
+    to_buy = [g for g in week_items if not g.checked and not g.already_home]
+    if not week_items:
+        groceries_state, groceries_detail = 'vide', "Liste pas encore générée depuis les menus."
+    elif to_buy:
+        groceries_state = 'partiel'
+        groceries_detail = f"{len(to_buy)} produit{'s' if len(to_buy) > 1 else ''} encore à acheter."
+    else:
+        groceries_state = 'ok'
+        groceries_detail = f"Les {len(week_items)} produits de la semaine sont cochés ou déjà à la maison."
+
+    steps = [
+        {'step': 1, 'label': 'Événements de la semaine', 'icon': 'icon-organisation',
+         'state': events_state, 'detail': events_detail,
+         'url': f"{reverse('week')}?wizard=1&step=1&week={week_start.isoformat()}"},
+        {'step': 2, 'label': 'Répartition des tâches', 'icon': 'icon-exception',
+         'state': tasks_state, 'detail': tasks_detail,
+         'url': f"{reverse('settings')}?wizard=1&step=2"},
+        {'step': 3, 'label': 'Menus', 'icon': 'icon-menu',
+         'state': menu_state, 'detail': menu_detail,
+         'url': f"{reverse('menu')}?wizard=1&step=3&week={week_start.isoformat()}"},
+        {'step': 4, 'label': 'Courses', 'icon': 'icon-maison',
+         'state': groceries_state, 'detail': groceries_detail,
+         'url': f"{reverse('maison')}?wizard=1&step=4&week={week_start.isoformat()}"},
+    ]
+    return steps
+
+
+WEEK_STATE_LABELS = {'ok': 'Prêt', 'partiel': 'À finir', 'vide': 'À faire'}
 
 
 def _wizard_redirect(request, view_name, step=None):
@@ -181,23 +350,23 @@ def today(request):
     custom_tasks = list(CustomTask.objects.filter(family=family))
 
     day = request.GET.get('day')
-    today_idx = datetime.date.today().weekday()  # 0=lundi
+    today_idx = _today().weekday()  # 0=lundi
     if day not in DAYS:
         day = DAYS[today_idx]
 
-    real_date = datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
+    real_date = _today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
     holiday_today = is_zone_b_holiday(real_date)
     holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
 
     # Only today's date has a meaningful "current period" — on any other day chip every
     # phase card just opens expanded (see 'open_default' below).
     is_today_view = day == DAYS[today_idx]
-    now = datetime.datetime.now()
+    now = _now()
     current_phase = _current_phase_now(now.time())
 
     # Direct access to the evening meal — unlike "À venir"/"À préparer pour demain" this isn't
     # relative to right now, so it's shown for whichever day chip is selected, not just today.
-    week_start = _monday_of(datetime.date.today())
+    week_start = _monday_of(_today())
     menu_entry = WeeklyMenuEntry.objects.filter(
         family=family, week_start=week_start, day=day
     ).select_related('recipe').first()
@@ -240,8 +409,8 @@ def today(request):
     upcoming_activity = None
     if is_today_view:
         candidates = sorted(
-            (a for a in activities
-             if a.day == day and a.person in view_people and a.start_time and a.start_time >= now.time()),
+            (a for a in activities_on(activities, real_date)
+             if a.person in view_people and a.start_time and a.start_time >= now.time()),
             key=lambda a: a.start_time,
         )
         if candidates:
@@ -270,28 +439,16 @@ def today(request):
     all_people = _family_people(settings)
     cards = []
     for person in view_people:
-        day_mode = active_day_mode(family, person, real_date)
-        task_list = _apply_task_overrides(
-            family, person, day, real_date, settings, activities, custom_tasks,
-            holiday_today, holiday_tomorrow, day_mode=day_mode,
+        day_mode, task_list, phases = _person_day_tasks(
+            family, person, day, real_date, settings, activities, custom_tasks, orders,
+            holiday_today, holiday_tomorrow,
         )
-        completions = {
-            tc.task_id: tc
-            for tc in TaskCompletion.objects.filter(family=family, person=person, date=real_date)
-        }
-        for x in task_list:
-            tc = completions.get(x['id'])
-            x['done'] = tc.done if tc else False
-            x['seconds_spent'] = tc.seconds_spent if tc else 0
-            x['timer_running'] = bool(tc and tc.timer_started_at)
-            x['timer_started_ms'] = int(tc.timer_started_at.timestamp() * 1000) if (tc and tc.timer_started_at) else None
         if is_today_view:
             for x in task_list:
                 if 'demain' in x['id']:
                     tomorrow_prep.append({
                         'name': _person_label(person, settings), 'label': x['label'], 'done': x['done'],
                     })
-        phases = [(pk, pl, apply_order(ts, orders.get(person, {}))) for pk, pl, ts in group_by_phase(task_list)]
         phase_cards = []
         for phase_key, phase_label, tasks in phases:
             checkable = [x for x in tasks if not x['info'] and not x['not_applicable']]
@@ -321,8 +478,27 @@ def today(request):
     kid_cards = [c for c in cards if c['person'] in ('fille', 'fils')]
     parent_cards = [c for c in cards if c['person'] in ('maman', 'papa')] if is_parent else []
 
+    # La routine guidée ne porte que sur la journée en cours : sur un autre jour du bandeau,
+    # on ne propose pas un parcours qui écrirait sur aujourd'hui.
+    routine_remaining = sum(
+        pc['remaining'] for c in kid_cards for pc in c['phase_cards']
+    ) if is_today_view else 0
+
+    # Bilan de préparation de la semaine en cours, affiché sur la carte d'entrée du parcours.
+    # Calculé seulement pour un parent, qui est le seul à voir cette carte.
+    prep_ready = 0
+    prep_all_ready = False
+    if is_parent:
+        prep_steps = _week_preparation(family, settings, _monday_of(real_date))
+        prep_ready = sum(1 for s in prep_steps if s['state'] == 'ok')
+        prep_all_ready = prep_ready == len(prep_steps)
+
     return render(request, 'planner/today.html', {
         'kid_cards': kid_cards, 'parent_cards': parent_cards, 'day': day, 'day_chips': day_chips,
+        'show_routine_entry': is_today_view and bool(kid_cards),
+        'routine_remaining': routine_remaining,
+        'prep_ready_count': prep_ready, 'prep_all_ready': prep_all_ready,
+        'digest': _day_digest(family, real_date), 'digest_date': real_date.isoformat(),
         'real_date': real_date, 'settings': settings, 'is_parent': is_parent,
         'who_options': who_options, 'who': who,
         'upcoming_activity': upcoming_activity, 'tomorrow_prep': tomorrow_prep,
@@ -369,7 +545,7 @@ def _apply_task_overrides(family, person, day, real_date, settings, activities, 
     (completion/star calculation) so the two stay in lockstep."""
     if own_task_list is None:
         own_task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow,
-                                   custom_tasks, day_mode=day_mode)
+                                   custom_tasks, day_mode=day_mode, date=real_date)
     disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
     outgoing, incoming = _reassignment_maps(family, real_date)
     disabled_ids = disabled_ids | outgoing.get(person, set())
@@ -377,7 +553,7 @@ def _apply_task_overrides(family, person, day, real_date, settings, activities, 
     for from_person, task_id in incoming.get(person, []):
         from_mode = active_day_mode(family, from_person, real_date)
         from_list = tasks_for(from_person, day, settings, activities, holiday_today, holiday_tomorrow,
-                               custom_tasks, day_mode=from_mode)
+                               custom_tasks, day_mode=from_mode, date=real_date)
         source = next((x for x in from_list if x['id'] == task_id), None)
         if source:
             task_list.append(dict(
@@ -385,6 +561,43 @@ def _apply_task_overrides(family, person, day, real_date, settings, activities, 
                 reassigned_from_label=_person_label(from_person, settings),
             ))
     return task_list
+
+
+def _person_day_tasks(family, person, day, real_date, settings, activities, custom_tasks,
+                      orders, holiday_today=None, holiday_tomorrow=None, day_mode=None):
+    """Une personne, un jour : sa liste de tâches ordonnée, groupée par phase, avec l'état
+    de complétion et de minuteur déjà attaché.
+
+    Source unique partagée par la checklist ('Aujourd'hui'), la routine guidée et la
+    tablette, pour qu'aucun de ces écrans ne puisse diverger sur ce qui reste à faire, dans
+    quel ordre, ni sur ce que le mode du jour, les exceptions et les réattributions ont
+    retiré. Retourne (day_mode, liste à plat, phases)."""
+    if holiday_today is None:
+        holiday_today = is_zone_b_holiday(real_date)
+    if holiday_tomorrow is None:
+        holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
+    if day_mode is None:
+        day_mode = active_day_mode(family, person, real_date)
+
+    task_list = _apply_task_overrides(
+        family, person, day, real_date, settings, activities, custom_tasks,
+        holiday_today, holiday_tomorrow, day_mode=day_mode,
+    )
+    completions = {
+        tc.task_id: tc
+        for tc in TaskCompletion.objects.filter(family=family, person=person, date=real_date)
+    }
+    for x in task_list:
+        tc = completions.get(x['id'])
+        x['done'] = tc.done if tc else False
+        x['seconds_spent'] = tc.seconds_spent if tc else 0
+        x['timer_running'] = bool(tc and tc.timer_started_at)
+        x['timer_started_ms'] = (
+            int(tc.timer_started_at.timestamp() * 1000) if (tc and tc.timer_started_at) else None
+        )
+    phases = [(pk, pl, apply_order(ts, orders.get(person, {})))
+              for pk, pl, ts in group_by_phase(task_list)]
+    return day_mode, task_list, phases
 
 
 def _checkable_ids_for(person, day, family):
@@ -448,6 +661,11 @@ def toggle_task(request):
     TaskCompletion.objects.update_or_create(
         family=family, person=person, date=real_date, task_id=task_id, defaults={'done': done}
     )
+    if done:
+        # La tâche est faite : le « besoin d'aide » qui la concernait n'a plus lieu d'être.
+        HelpRequest.objects.filter(
+            family=family, person=person, date=real_date, task_id=task_id, active=True
+        ).update(active=False)
     milestone_reached, stars_total, reward_text = False, None, None
     if done and person in ('fille', 'fils'):
         milestone_reached, stars_total, reward_text = _award_star_if_day_complete(family, person, day, real_date)
@@ -504,12 +722,268 @@ def reorder_tasks(request):
 
 
 @login_required
+def routine_view(request):
+    """« Commencer nos routines » : un espace par enfant, côte à côte, sur l'écran partagé.
+
+    Chaque enfant avance à son rythme — la tâche courante d'un espace est simplement la
+    première tâche non faite de SA liste, dérivée à chaque affichage de TaskCompletion. Il
+    n'y a donc aucun second système de progression : cocher ici ou depuis la checklist
+    écrit exactement la même chose, les étoiles suivent les mêmes règles, et un
+    rechargement repart de l'état réel.
+
+    L'ordre personnalisé, le mode du jour, les exceptions et les réattributions sont ceux de
+    _person_day_tasks, partagé avec « Aujourd'hui ». Les tâches non applicables et les lignes
+    d'information sont exclues du parcours : on ne demande de faire que ce qui est à faire."""
+    family = _get_family(request)
+    _ensure_seed_data(family)
+    settings = FamilySettings.load(family)
+    activities = list(Activity.objects.filter(family=family))
+    custom_tasks = list(CustomTask.objects.filter(family=family))
+    orders = {}
+    for o in TaskOrder.objects.filter(family=family):
+        orders.setdefault(o.person, {})[o.task_id] = o.order
+
+    real_date = _today()
+    day = DAYS[real_date.weekday()]
+    help_flags = set(
+        HelpRequest.objects.filter(family=family, date=real_date, active=True)
+        .values_list('person', 'task_id')
+    )
+
+    spaces = []
+    for person in _kids_people(settings):
+        day_mode, _task_list, phases = _person_day_tasks(
+            family, person, day, real_date, settings, activities, custom_tasks, orders,
+        )
+        sequence = []
+        for phase_key, phase_label, tasks in phases:
+            for task in tasks:
+                if task['info'] or task['not_applicable']:
+                    continue
+                sequence.append(dict(task, phase_label=phase_label))
+        done_count = sum(1 for task in sequence if task['done'])
+        current = next((task for task in sequence if not task['done']), None)
+        spaces.append({
+            'person': person,
+            'name': _person_label(person, settings),
+            'sequence': sequence,
+            'current': current,
+            'current_phase': current['phase_label'] if current else '',
+            'needs_help': bool(current and (person, current['id']) in help_flags),
+            'done_count': done_count,
+            'total': len(sequence),
+            'remaining': len(sequence) - done_count,
+            'pct': round(done_count / len(sequence) * 100) if sequence else 0,
+            'finished': bool(sequence) and done_count == len(sequence),
+            'day_mode': day_mode,
+            'can_act': _can_act_on(request, person),
+        })
+
+    return render(request, 'planner/routine.html', {
+        'spaces': spaces, 'day': day, 'real_date': real_date,
+        'digest': _day_digest(family, real_date), 'digest_date': real_date.isoformat(),
+    })
+
+
+@login_required
+@require_POST
+def toggle_help(request):
+    """Lève ou retire le « besoin d'aide » d'un enfant sur une tâche. Purement un drapeau
+    d'affichage dans l'espace de cet enfant : il ne bloque pas l'autre, ne touche pas à la
+    progression et n'envoie aucune notification externe."""
+    family = _get_family(request)
+    person = request.POST.get('person')
+    if not _can_act_on(request, person):
+        raise PermissionDenied
+    task_id = request.POST.get('task_id', '').strip()
+    if person not in PERSON_KEYS or not task_id:
+        return JsonResponse({'ok': False}, status=400)
+    wants_help = request.POST.get('help') == '1'
+    real_date = _today()
+    HelpRequest.objects.update_or_create(
+        family=family, person=person, date=real_date, task_id=task_id,
+        defaults={'active': wants_help},
+    )
+    return JsonResponse({'ok': True, 'needs_help': wants_help})
+
+
+def _phase_progress(family, settings, people, day, real_date):
+    """Reste-t-il quelque chose à faire, par (personne, phase) ? Dérivé de _person_day_tasks,
+    donc exactement le même décompte que « Aujourd'hui » et que la routine guidée : un rappel
+    ne peut pas prétendre qu'il reste des tâches là où l'écran affiche que tout est coché."""
+    activities = list(Activity.objects.filter(family=family))
+    custom_tasks = list(CustomTask.objects.filter(family=family))
+    orders = {}
+    for o in TaskOrder.objects.filter(family=family):
+        orders.setdefault(o.person, {})[o.task_id] = o.order
+
+    progress = {}
+    for person in people:
+        _day_mode, _flat, phases = _person_day_tasks(
+            family, person, day, real_date, settings, activities, custom_tasks, orders,
+        )
+        for phase_key, phase_label, tasks in phases:
+            checkable = [t for t in tasks if not t['info'] and not t['not_applicable']]
+            done = sum(1 for t in checkable if t['done'])
+            progress[(person, phase_key)] = {
+                'phase_label': phase_label, 'total': len(checkable), 'done': done,
+                'remaining': len(checkable) - done,
+            }
+    return progress
+
+
+def _due_reminders(family, settings, now=None):
+    """Les rappels à afficher maintenant, en heure locale Django (Europe/Paris).
+
+    Un rappel s'affiche si — et seulement si — les rappels sont activés pour la famille,
+    l'heure locale est hors de la plage de calme, le jour fait partie de ses jours, son
+    heure est passée, il n'a pas été mis en sourdine aujourd'hui, et il reste réellement
+    des tâches dans la phase visée. Autrement dit on ne rappelle jamais une routine déjà
+    terminée, et jamais une phase vide.
+
+    Volontairement calculé à la demande, sans tâche planifiée ni file d'attente : c'est ce
+    qui permet de tenir la promesse « aucune infrastructure supplémentaire », au prix
+    assumé de ne rien pouvoir afficher quand l'application est fermée."""
+    if not settings.reminders_enabled:
+        return []
+    now = now or _now()
+    if settings.in_quiet_hours(now.time()):
+        return []
+
+    today, current = now.date(), now.time()
+    day = DAYS[today.weekday()]
+    kids = set(_kids_people(settings))
+    candidates = [
+        r for r in RoutineReminder.objects.filter(family=family, active=True)
+        if r.person in kids and r.occurs_on_day(day) and r.at_time <= current and r.acked_on != today
+    ]
+    if not candidates:
+        return []
+
+    progress = _phase_progress(family, settings, {r.person for r in candidates}, day, today)
+    due = []
+    for reminder in candidates:
+        state = progress.get((reminder.person, reminder.phase))
+        if not state or not state['remaining']:
+            continue
+        name = _person_label(reminder.person, settings)
+        due.append({
+            'id': reminder.id,
+            'person': reminder.person,
+            'person_name': name,
+            'phase': reminder.phase,
+            'phase_label': state['phase_label'],
+            'label': reminder.label or reminder.default_label(name),
+            'at_time': reminder.at_time.strftime('%H:%M'),
+            'remaining': state['remaining'],
+        })
+    return due
+
+
+def _day_digest(family, date):
+    """Empreinte courte de l'état affiché d'une journée, pour la synchronisation légère.
+
+    Elle est calculée à partir de ce que les écrans montrent réellement — cases cochées,
+    minuteurs, demandes d'aide, mode du jour, repas du soir. Elle change donc si et
+    seulement si l'affichage doit changer : pas de rechargement pour rien, et aucun
+    changement manqué.
+
+    Un hachage plutôt qu'un horodatage : il ne dépend d'aucune horloge, ne réclame pas de
+    colonne supplémentaire sur des tables existantes, et ne peut pas se désynchroniser
+    d'un écran qui afficherait autre chose que ce qui a été daté."""
+    parts = list(
+        TaskCompletion.objects.filter(family=family, date=date)
+        .order_by('person', 'task_id')
+        .values_list('person', 'task_id', 'done', 'seconds_spent', 'timer_started_at')
+    )
+    parts += list(
+        HelpRequest.objects.filter(family=family, date=date, active=True)
+        .order_by('person', 'task_id').values_list('person', 'task_id')
+    )
+    parts += list(
+        DayMode.objects.filter(family=family, date=date)
+        .order_by('person').values_list('person', 'mode')
+    )
+    parts += list(
+        WeeklyMenuEntry.objects.filter(family=family, week_start=_monday_of(date))
+        .order_by('day').values_list('day', 'recipe_id', 'servings', 'leftovers_from')
+    )
+    return hashlib.sha1(repr(parts).encode()).hexdigest()[:16]
+
+
+@login_required
+def day_digest_json(request):
+    """Interrogé par les écrans ouverts pour savoir si la journée a bougé ailleurs.
+
+    Réponse volontairement minuscule : une empreinte, rien d'autre. C'est à la page de
+    décider quoi en faire — la tablette se recharge seule, un écran où quelqu'un est en
+    train de cocher propose de le faire."""
+    family = _get_family(request)
+    date = _today()
+    raw = request.GET.get('date')
+    if raw:
+        try:
+            date = datetime.date.fromisoformat(raw)
+        except ValueError:
+            pass
+    return JsonResponse({'digest': _day_digest(family, date), 'date': date.isoformat()})
+
+
+@ratelimit(key='ip', rate='120/m', method='GET', block=True)
+def tablet_digest_json(request, token):
+    """Même empreinte, pour la tablette de cuisine, qui n'est pas connectée.
+
+    Le jeton long et non devinable de l'URL est la seule clé, exactement comme pour
+    l'affichage lui-même, et cette réponse ne divulgue rien de plus qu'un hachage."""
+    settings = FamilySettings.objects.select_related('family').filter(
+        tablet_token=token
+    ).first() if token else None
+    if not settings:
+        raise Http404("Lien tablette invalide.")
+    date = _today()
+    raw = request.GET.get('date')
+    if raw:
+        try:
+            date = datetime.date.fromisoformat(raw)
+        except ValueError:
+            pass
+    return JsonResponse({'digest': _day_digest(settings.family, date)})
+
+
+@login_required
+def reminders_json(request):
+    """Interrogé toutes les minutes par la page ouverte, pour qu'un rappel apparaisse sans
+    rechargement. Lecture seule et limité à la famille de l'utilisateur."""
+    family = _get_family(request)
+    settings = FamilySettings.load(family)
+    return JsonResponse({'reminders': _due_reminders(family, settings)})
+
+
+@login_required
+@require_POST
+def snooze_reminder(request):
+    """« Plus tard » : met le rappel en sourdine pour la journée en cours seulement — il
+    repart de lui-même le lendemain, sans que personne ait à le réactiver."""
+    family = _get_family(request)
+    reminder = RoutineReminder.objects.filter(
+        pk=request.POST.get('reminder_id'), family=family
+    ).first()
+    if reminder is None:
+        return JsonResponse({'ok': False}, status=404)
+    if not _can_act_on(request, reminder.person):
+        raise PermissionDenied
+    reminder.acked_on = _today()
+    reminder.save(update_fields=['acked_on'])
+    return JsonResponse({'ok': True})
+
+
+@login_required
 def stars_view(request):
     family = _get_family(request)
     settings = FamilySettings.load(family)
     milestone = max(1, settings.star_milestone)
     kids = [p for p in _family_people(settings) if p in ('fille', 'fils')]
-    today = datetime.date.today()
+    today = _today()
 
     trackers = []
     for kid in kids:
@@ -577,17 +1051,59 @@ MENAGE_SHORT_LABELS = {
 
 
 def _week_start_from_request(request):
-    """Resolves the Monday to display from ?week=YYYY-MM-DD (either param may be absent or
-    invalid, in which case today's week is used — this keeps week_view's default behavior
-    unchanged when no navigation has happened yet)."""
-    today_monday = _monday_of(datetime.date.today())
-    week_param = request.GET.get('week')
+    """Resolves the Monday to work on from ?week=YYYY-MM-DD (absent or invalid → this week,
+    so every screen keeps its previous default until navigation happens).
+
+    Read by every week-scoped screen — semainier, menu, courses, préparation de semaine — so
+    that choosing a week once carries across all of them instead of each one silently
+    snapping back to the current week (and editing it by accident)."""
+    week_param = request.GET.get('week') or request.POST.get('week')
     if week_param:
         try:
             return _monday_of(datetime.date.fromisoformat(week_param))
         except ValueError:
             pass
-    return today_monday
+    return _monday_of(_today())
+
+
+def _week_context(week_start):
+    """Common display context for a chosen week: its Monday/Sunday, whether it's the current
+    one, and the ?week= value to thread through links and redirects."""
+    today_monday = _monday_of(_today())
+    return {
+        'week_start': week_start,
+        'week_end': week_start + datetime.timedelta(days=6),
+        'week_param': week_start.isoformat(),
+        'week_prev': (week_start - datetime.timedelta(days=7)).isoformat(),
+        'week_next': (week_start + datetime.timedelta(days=7)).isoformat(),
+        'is_current_week': week_start == today_monday,
+        'is_future_week': week_start > today_monday,
+    }
+
+
+def _redirect_keeping(request, view_name, week_start=None, **extra):
+    """redirect() that preserves the context the user was working in: the chosen week, the
+    wizard step when the action came from the préparation de semaine, and whatever extra
+    param the caller names (the favourites filter, typically).
+
+    Plain redirect() drops the whole query string, which is why submitting any form on the
+    menu or the courses used to bounce you back to the current week — and, worse, made the
+    next save land on that week instead of the one you were preparing."""
+    params = {}
+    if week_start is not None:
+        params['week'] = week_start.isoformat()
+    if request.GET.get('wizard') == '1':
+        params['wizard'] = '1'
+        if request.GET.get('step'):
+            params['step'] = request.GET['step']
+    params.update({k: v for k, v in extra.items() if v})
+    url = reverse(view_name)
+    return redirect(f"{url}?{urlencode(params)}" if params else url)
+
+
+def _menu_redirect(request, week_start):
+    return _redirect_keeping(request, 'menu', week_start,
+                             favoris='1' if request.GET.get('favoris') == '1' else None)
 
 
 @login_required
@@ -599,7 +1115,7 @@ def week_view(request):
     people = _family_people(settings)
 
     week_start = _week_start_from_request(request)
-    today_monday = _monday_of(datetime.date.today())
+    today_monday = _monday_of(_today())
     menu_by_day = {e.day: e.recipe for e in
                    WeeklyMenuEntry.objects.filter(family=family, week_start=week_start).select_related('recipe')}
 
@@ -616,22 +1132,17 @@ def week_view(request):
         by_label = {}
         for p in people:
             day_mode = active_day_mode(family, p, real_date)
-            for x in tasks_for(p, d, settings, activities, holiday, False, day_mode=day_mode):
+            for x in tasks_for(p, d, settings, activities, holiday, False, day_mode=day_mode,
+                               date=real_date):
                 if x['id'] in MENAGE_DAILY_IDS or pillar_for(x['id'], x['period']) != 'menage':
                     continue
                 short = DEEP_CLEAN_ROOMS[d] if x['id'] == 'deepclean' else MENAGE_SHORT_LABELS.get(x['id'], x['label'])
                 by_label.setdefault(short, []).append(_person_label(p, settings))
         menage_cells.append([f"{' & '.join(names)} : {label}" for label, names in by_label.items()])
 
-        # An Activity with `specific_date` set is a one-off occurrence, shown only on the
-        # exact date it falls on (never recurring); one without it shows every week on its
-        # regular `day` — see Activity.specific_date and task_logic.find_schedule_conflicts.
-        day_activities = [
-            a for a in activities if a.person in people and (
-                (a.specific_date and a.specific_date == real_date) or
-                (not a.specific_date and a.day == d)
-            )
-        ]
+        # Même règle de sélection que partout ailleurs (task_logic.activities_on) : un
+        # événement ponctuel n'apparaît qu'à sa date, un récurrent chaque semaine.
+        day_activities = [a for a in activities_on(activities, real_date) if a.person in people]
         conflicting_ids = find_schedule_conflicts(day_activities)
         activites_cells.append([
             {
@@ -690,7 +1201,7 @@ def duplicate_week(request):
     try:
         source_week = _monday_of(datetime.date.fromisoformat(week_param))
     except (TypeError, ValueError):
-        source_week = _monday_of(datetime.date.today())
+        source_week = _monday_of(_today())
     target_week = source_week + datetime.timedelta(days=7)
 
     already_planned_days = set(WeeklyMenuEntry.objects.filter(
@@ -719,7 +1230,16 @@ def maison(request):
     family = _get_family(request)
     _ensure_seed_data(family)
     settings = FamilySettings.load(family)
-    items = GroceryItem.objects.filter(family=family)
+    week_start = _week_start_from_request(request)
+    # Les articles issus du menu sont rattachés à leur semaine : on affiche ceux de la
+    # semaine choisie, plus tous les produits sans semaine (habituels et ajouts manuels),
+    # qui restent valables quelle que soit la semaine préparée.
+    items = GroceryItem.objects.filter(family=family).filter(
+        models.Q(week_start=week_start) | models.Q(week_start__isnull=True)
+    )
+    other_week_count = GroceryItem.objects.filter(family=family, week_start__isnull=False).exclude(
+        week_start=week_start
+    ).count()
     grouped = {}
     for i in items:
         grouped.setdefault(i.category or 'Ajoutés', []).append(i)
@@ -730,7 +1250,7 @@ def maison(request):
     )
     return render(request, 'planner/maison.html', {
         'settings': settings, 'grouped': grouped, 'menu_category': MENU_GROCERY_CATEGORY,
-        'wizard': wizard,
+        'wizard': wizard, 'other_week_count': other_week_count, **_week_context(week_start),
     })
 
 
@@ -752,7 +1272,7 @@ def add_grocery(request):
     if name:
         GroceryItem.objects.get_or_create(family=family, name=name, defaults={'category': 'Ajoutés'})
         messages.success(request, "Article ajouté à la liste de courses.")
-    return redirect('maison')
+    return _redirect_keeping(request, 'maison', _week_start_from_request(request))
 
 
 @login_required
@@ -761,7 +1281,7 @@ def reset_grocery(request):
     family = _get_family(request)
     GroceryItem.objects.filter(family=family).update(checked=False)
     messages.success(request, "Liste de courses réinitialisée.")
-    return redirect('maison')
+    return _redirect_keeping(request, 'maison', _week_start_from_request(request))
 
 
 @login_required
@@ -785,7 +1305,7 @@ def edit_grocery(request):
     name = request.POST.get('name', '').strip()
     if not name:
         messages.error(request, "Le nom de l'article ne peut pas être vide.")
-        return redirect('maison')
+        return _redirect_keeping(request, 'maison', _week_start_from_request(request))
     item.name = name
     item.category = request.POST.get('category', '').strip()
     qty_raw = request.POST.get('quantity', '').strip()
@@ -794,13 +1314,13 @@ def edit_grocery(request):
             item.quantity = Decimal(qty_raw.replace(',', '.'))
         except InvalidOperation:
             messages.error(request, "Quantité invalide.")
-            return redirect('maison')
+            return _redirect_keeping(request, 'maison', _week_start_from_request(request))
     else:
         item.quantity = None
     item.unit = request.POST.get('unit', '').strip()
     item.save()
     messages.success(request, "Article modifié.")
-    return redirect('maison')
+    return _redirect_keeping(request, 'maison', _week_start_from_request(request))
 
 
 @login_required
@@ -811,7 +1331,7 @@ def delete_grocery(request):
     family = _get_family(request)
     GroceryItem.objects.filter(pk=request.POST.get('item_id'), family=family).delete()
     messages.success(request, "Article supprimé.")
-    return redirect('maison')
+    return _redirect_keeping(request, 'maison', _week_start_from_request(request))
 
 
 @login_required
@@ -826,14 +1346,14 @@ def toggle_rotation(request):
     else:
         settings.rotation_lave_vaisselle = 'fils' if settings.rotation_lave_vaisselle == 'fille' else 'fille'
     settings.save()
-    return redirect('maison')
+    return _redirect_keeping(request, 'maison', _week_start_from_request(request))
 
 
 @login_required
 def menu(request):
     family = _get_family(request)
     _ensure_seed_data(family)
-    week_start = _monday_of(datetime.date.today())
+    week_start = _week_start_from_request(request)
     # Unfiltered — used for the per-day recipe dropdown, which must always offer every
     # recipe regardless of the "favoris" display filter below.
     recipes = Recipe.objects.filter(family=family).order_by('-is_favorite', 'category', 'name')
@@ -843,15 +1363,36 @@ def menu(request):
     for r in display_recipes:
         by_cat.setdefault(r.category, []).append(r)
 
-    entries = {e.day: e.recipe_id for e in WeeklyMenuEntry.objects.filter(family=family, week_start=week_start)}
-    chosen_ids = [v for v in entries.values() if v]
-    chosen_recipes = Recipe.objects.filter(family=family, id__in=chosen_ids)
-    all_ingredients = Recipe.aggregate_ingredients(chosen_recipes)
+    settings = FamilySettings.load(family)
+    entries = {
+        e.day: e for e in
+        WeeklyMenuEntry.objects.filter(family=family, week_start=week_start).select_related('recipe')
+    }
+    # Un jour « restes » ne cuisine rien et n'achète rien : il ne pèse donc pas dans les
+    # courses. Les portions réellement prévues, elles, comptent — c'est ce qui fait que
+    # cuisiner pour deux repas achète bien pour deux repas.
+    portions = [
+        (e.recipe, e.servings_target(settings.household_servings))
+        for e in entries.values() if e.recipe and not e.is_leftovers()
+    ]
+    all_ingredients = Recipe.aggregate_scaled(portions)
     for ing in all_ingredients:
         qty_text = format_quantity(ing['quantity'])
         ing['quantity_display'] = f"{qty_text} {ing['unit']}".strip() if qty_text else ing['unit']
 
-    day_rows = [{'day': d, 'label': DAY_FULL[d], 'selected': entries.get(d)} for d in DAYS]
+    day_rows = []
+    for d in DAYS:
+        entry = entries.get(d)
+        day_rows.append({
+            'day': d, 'label': DAY_FULL[d],
+            'selected': entry.recipe_id if entry else None,
+            'servings': entry.servings if entry else None,
+            'servings_target': entry.servings_target(settings.household_servings) if entry else settings.household_servings,
+            'leftovers_from': entry.leftovers_from if entry else '',
+            'leftovers_label': DAY_FULL.get(entry.leftovers_from, '') if entry else '',
+            'recipe': entry.recipe if entry else None,
+            'other_days': [(o, DAY_FULL[o]) for o in DAYS if o != d],
+        })
     recipe_form = RecipeForm()
     pending_conflicts = None
 
@@ -863,22 +1404,80 @@ def menu(request):
                 recipe.family = family
                 recipe.save()
                 messages.success(request, "Recette enregistrée.")
-                return _wizard_redirect(request, 'menu')
+                return _menu_redirect(request, week_start)
             recipe_form = form
         elif 'delete_recipe' in request.POST:
             Recipe.objects.filter(id=request.POST['delete_recipe'], family=family).delete()
             messages.success(request, "Recette supprimée.")
-            return _wizard_redirect(request, 'menu')
+            return _menu_redirect(request, week_start)
         elif 'set_day' in request.POST:
             day = request.POST['set_day']
             recipe_id = request.POST.get('recipe_id') or None
+            if day not in DAYS:
+                messages.error(request, "Jour invalide.")
+                return _menu_redirect(request, week_start)
             if recipe_id and not Recipe.objects.filter(id=recipe_id, family=family).exists():
                 messages.error(request, "Recette invalide.")
-                return _wizard_redirect(request, 'menu')
+                return _menu_redirect(request, week_start)
+            # Choisir un plat lève les restes : les deux ne peuvent pas cohabiter.
             WeeklyMenuEntry.objects.update_or_create(
-                family=family, week_start=week_start, day=day, defaults={'recipe_id': recipe_id}
+                family=family, week_start=week_start, day=day,
+                defaults={'recipe_id': recipe_id, 'leftovers_from': ''},
             )
-            return _wizard_redirect(request, 'menu')
+            return _menu_redirect(request, week_start)
+        elif 'set_servings' in request.POST:
+            day = request.POST.get('day')
+            raw = request.POST.get('servings', '').strip()
+            if day not in DAYS:
+                messages.error(request, "Jour invalide.")
+                return _menu_redirect(request, week_start)
+            try:
+                servings = int(raw) if raw else None
+            except ValueError:
+                messages.error(request, "Indiquez un nombre de personnes.")
+                return _menu_redirect(request, week_start)
+            if servings is not None and not 1 <= servings <= 50:
+                messages.error(request, "Le nombre de personnes doit être compris entre 1 et 50.")
+                return _menu_redirect(request, week_start)
+            WeeklyMenuEntry.objects.update_or_create(
+                family=family, week_start=week_start, day=day,
+                defaults={'servings': servings},
+            )
+            return _menu_redirect(request, week_start)
+        elif 'cook_double' in request.POST:
+            # « Cuisiner pour deux repas » : on double les portions du jour cuisiné et on
+            # marque le jour cible comme restes. Une seule action pour ce que les familles
+            # font vraiment, au lieu de deux réglages à retrouver séparément.
+            day = request.POST.get('day')
+            target = request.POST.get('leftovers_day')
+            if day not in DAYS or target not in DAYS or day == target:
+                messages.error(request, "Choisissez un autre jour pour les restes.")
+                return _menu_redirect(request, week_start)
+            entry = WeeklyMenuEntry.objects.filter(
+                family=family, week_start=week_start, day=day
+            ).select_related('recipe').first()
+            if entry is None or not entry.recipe:
+                messages.error(request, "Choisissez d'abord un plat pour ce jour.")
+                return _menu_redirect(request, week_start)
+            base = entry.servings_target(settings.household_servings)
+            entry.servings = base * 2
+            entry.save(update_fields=['servings'])
+            WeeklyMenuEntry.objects.update_or_create(
+                family=family, week_start=week_start, day=target,
+                defaults={'recipe': None, 'servings': None, 'leftovers_from': day},
+            )
+            messages.success(
+                request,
+                f"{DAY_FULL[day]} cuisiné pour {base * 2} personnes, {DAY_FULL[target]} en restes.",
+            )
+            return _menu_redirect(request, week_start)
+        elif 'clear_leftovers' in request.POST:
+            day = request.POST.get('day')
+            if day in DAYS:
+                WeeklyMenuEntry.objects.filter(
+                    family=family, week_start=week_start, day=day
+                ).update(leftovers_from='')
+            return _menu_redirect(request, week_start)
         elif 'copy_to_courses' in request.POST:
             # Explicit conflict handling (Lot 4, point 5): copy_to_courses used to be a
             # silent get_or_create — an item already checked "acheté" that becomes needed
@@ -891,7 +1490,12 @@ def menu(request):
             # weekly menu rather than trusted from the first request.
             resolution = request.POST.get('resolve_returning')
             names = [ing['name'] for ing in all_ingredients]
-            existing_by_name = {i.name: i for i in GroceryItem.objects.filter(family=family, name__in=names)}
+            # On ne réutilise que les articles de cette semaine ou les produits habituels
+            # (week_start NULL) : la liste d'une autre semaine n'est jamais écrasée.
+            existing_by_name = {
+                i.name: i for i in GroceryItem.objects.filter(family=family, name__in=names)
+                .filter(models.Q(week_start=week_start) | models.Q(week_start__isnull=True))
+            }
             returning_checked = [
                 existing_by_name[n] for n in names
                 if existing_by_name.get(n) is not None and existing_by_name[n].checked
@@ -904,41 +1508,97 @@ def menu(request):
                     if item is None:
                         GroceryItem.objects.create(
                             family=family, name=ing['name'], category=MENU_GROCERY_CATEGORY,
-                            quantity=ing['quantity'], unit=ing['unit'],
+                            quantity=ing['quantity'], unit=ing['unit'], week_start=week_start,
                         )
                     else:
                         item.quantity = ing['quantity']
                         item.unit = ing['unit']
+                        # Un ajout manuel (week_start NULL) réclamé par le menu devient un
+                        # article de la semaine ; il n'est jamais supprimé pour autant.
+                        item.week_start = week_start
                         if resolution == 'uncheck' and item.checked:
                             item.checked = False
-                        item.save(update_fields=['quantity', 'unit', 'checked'])
+                        item.save(update_fields=['quantity', 'unit', 'checked', 'week_start'])
                 messages.success(request, "Ingrédients ajoutés à la liste de courses.")
                 # Step 4 of the "Préparer notre semaine" wizard (see wizard_start): this POST
                 # *is* step 4's action, so on success it hands off straight to 'maison' (the
                 # screen that lists what was just copied) instead of looping back to 'menu' —
                 # outside the wizard, behavior is unchanged (back to 'menu').
                 if request.GET.get('wizard') == '1' and request.GET.get('step') == '4':
-                    return redirect(f"{reverse('maison')}?wizard=1&step=4")
-                return redirect('menu')
+                    return _redirect_keeping(request, 'maison', week_start)
+                return _menu_redirect(request, week_start)
 
     wizard_step = 4 if request.GET.get('step') == '4' else 3
     if wizard_step == 4:
         wizard = _wizard_banner(
             request, 4, 'Courses',
             "Ajoutez les ingrédients du menu à la liste de courses avec le bouton ci-dessous.",
-            next_url=f"{reverse('maison')}?wizard=1&step=4",
+            next_url=f"{reverse('maison')}?wizard=1&step=4&week={week_start.isoformat()}",
         )
     else:
         wizard = _wizard_banner(
             request, 3, 'Menus',
             "Choisissez une recette pour chaque jour de la semaine.",
-            next_url=f"{reverse('menu')}?wizard=1&step=4",
+            next_url=f"{reverse('menu')}?wizard=1&step=4&week={week_start.isoformat()}",
         )
 
     return render(request, 'planner/menu.html', {
         'by_cat': by_cat, 'day_rows': day_rows, 'recipes': recipes,
         'all_ingredients': all_ingredients, 'recipe_form': recipe_form,
         'favoris_only': favoris_only, 'pending_conflicts': pending_conflicts, 'wizard': wizard,
+        'settings': settings, 'household_servings': settings.household_servings,
+        **_week_context(week_start),
+    })
+
+
+@login_required
+def cook_mode(request, pk):
+    """Mode cuisine : une recette, une étape à la fois, en grand.
+
+    Pensé pour un plan de travail : gros caractères, une seule étape visible, et les
+    ingrédients déjà ramenés au nombre de personnes prévu — on ne veut pas faire une règle
+    de trois les mains dans la farine. Le nombre de couverts vient du repas planifié quand
+    on arrive depuis le menu, du réglage de la famille sinon, et reste ajustable ici.
+
+    Lecture seule : cet écran ne modifie ni la recette ni le menu. L'avancement dans les
+    étapes vit dans la page, volontairement — une étape cochée n'a pas de sens le lendemain,
+    et personne n'a envie de « réinitialiser la recette » avant de cuisiner."""
+    family = _get_family(request)
+    recipe = get_object_or_404(Recipe, pk=pk, family=family)
+    settings = FamilySettings.load(family)
+
+    try:
+        asked = int(request.GET.get('portions', ''))
+    except (TypeError, ValueError):
+        asked = None
+    if asked is not None and not 1 <= asked <= 50:
+        asked = None
+
+    servings = asked
+    if servings is None:
+        day = request.GET.get('day')
+        week_start = _week_start_from_request(request)
+        entry = WeeklyMenuEntry.objects.filter(
+            family=family, week_start=week_start, day=day, recipe=recipe
+        ).first() if day in DAYS else None
+        servings = (entry.servings_target(settings.household_servings) if entry
+                    else settings.household_servings)
+
+    ingredients = []
+    for ing in recipe.scaled_ingredients(servings):
+        qty_text = format_quantity(ing['quantity'])
+        ingredients.append({
+            'name': ing['name'],
+            'quantity_display': f"{qty_text} {ing['unit']}".strip() if qty_text else ing['unit'],
+        })
+
+    return render(request, 'planner/cook.html', {
+        'recipe': recipe,
+        'servings': servings,
+        'ingredients': ingredients,
+        'steps': list(recipe.steps or []),
+        'scaled': servings != recipe.servings,
+        'back_url': f"{reverse('menu')}?week={_week_start_from_request(request).isoformat()}",
     })
 
 
@@ -972,17 +1632,22 @@ def settings_view(request):
         elif 'add_custom_task' in request.POST:
             label = request.POST.get('task_label', '').strip()
             days_selected = [d for d in request.POST.getlist('task_days') if d in DAYS]
-            if label and days_selected:
-                CustomTask.objects.create(
+            freq, freq_error = _read_frequency(request)
+            # Une tâche ponctuelle porte sa date : elle n'a pas besoin de jours de semaine.
+            needs_days = freq is not None and freq['frequency'] != 'once'
+            if freq_error:
+                messages.error(request, freq_error)
+            elif label and (days_selected or not needs_days):
+                task = CustomTask.objects.create(
                     family=family,
                     person=request.POST.get('task_person', 'fille'),
                     days=days_selected,
                     period=request.POST.get('task_period', 'matin'),
-                    label=label,
+                    label=label, **freq,
                 )
-                messages.success(request, "Tâche ajoutée.")
+                messages.success(request, f"Tâche ajoutée — {task.frequency_display()}.")
             else:
-                messages.error(request, "Merci d'indiquer un intitulé et au moins un jour.")
+                messages.error(request, _custom_task_error(label, days_selected))
         elif 'save_rewards' in request.POST:
             try:
                 milestone = int(request.POST.get('star_milestone', settings.star_milestone))
@@ -992,6 +1657,58 @@ def settings_view(request):
             settings.star_reward_text = request.POST.get('star_reward_text', '').strip()
             settings.save()
             messages.success(request, "Récompense enregistrée.")
+        elif 'add_checklist' in request.POST:
+            name = request.POST.get('cl_name', '').strip()
+            # Un élément par ligne : c'est ainsi qu'on recopie une liste déjà écrite ailleurs.
+            items = [l.strip() for l in request.POST.get('cl_items', '').splitlines() if l.strip()]
+            if not name:
+                messages.error(request, "Donnez un nom à la checklist.")
+            elif not items:
+                messages.error(request, "Ajoutez au moins un élément, un par ligne.")
+            else:
+                Checklist.objects.create(
+                    family=family, name=name, items=items,
+                    person=request.POST.get('cl_person', 'fille'),
+                    period=request.POST.get('cl_period', 'matin'),
+                )
+                messages.success(
+                    request,
+                    f"Checklist « {name} » enregistrée ({len(items)} élément{'s' if len(items) > 1 else ''}).",
+                )
+        elif 'add_reminder' in request.POST:
+            person = request.POST.get('rem_person', 'fille')
+            days_selected = [d for d in request.POST.getlist('rem_days') if d in DAYS]
+            at_time = parse_free_time(request.POST.get('rem_time', ''))
+            phase = request.POST.get('rem_phase', 'matin')
+            # Les rappels sont réservés aux enfants : on le vérifie ici, pas seulement dans
+            # la liste déroulante du formulaire.
+            if person not in _kids_people(settings):
+                messages.error(request, "Les rappels ne concernent que les routines des enfants.")
+            elif phase not in dict(REMINDER_PHASE_CHOICES):
+                messages.error(request, "Moment de la journée invalide.")
+            elif at_time is None:
+                messages.error(request, "Indiquez une heure pour le rappel (par exemple 7h30).")
+            elif not days_selected:
+                messages.error(request, "Choisissez au moins un jour pour ce rappel.")
+            else:
+                RoutineReminder.objects.create(
+                    family=family, person=person, phase=phase, at_time=at_time,
+                    days=days_selected, label=request.POST.get('rem_label', '').strip(),
+                )
+                messages.success(
+                    request,
+                    f"Rappel ajouté à {at_time:%H:%M} — {_days_summary(days_selected)}.",
+                )
+        elif 'save_reminder_settings' in request.POST:
+            quiet_start = parse_free_time(request.POST.get('quiet_start', ''))
+            quiet_end = parse_free_time(request.POST.get('quiet_end', ''))
+            settings.reminders_enabled = 'reminders_enabled' in request.POST
+            if quiet_start is not None:
+                settings.quiet_start = quiet_start
+            if quiet_end is not None:
+                settings.quiet_end = quiet_end
+            settings.save()
+            messages.success(request, "Réglages des rappels enregistrés.")
         elif 'regenerate_tablet_token' in request.POST:
             settings.regenerate_tablet_token()
             messages.success(request, "Lien tablette régénéré.")
@@ -1010,6 +1727,12 @@ def settings_view(request):
             settings.courses_day = request.POST.get('courses_day', settings.courses_day)
             settings.papa_travaille = 'papa_travaille' in request.POST
             settings.week_note = request.POST.get('week_note', '')
+            try:
+                household = int(request.POST.get('household_servings', settings.household_servings))
+                if 1 <= household <= 50:
+                    settings.household_servings = household
+            except (TypeError, ValueError):
+                pass
             settings.save()
             messages.success(request, "Réglages enregistrés.")
         return _wizard_redirect(request, 'settings')
@@ -1022,6 +1745,14 @@ def settings_view(request):
         c.person_name = _person_label(c.person, settings)
     members = FamilyMembership.objects.filter(family=family).select_related('user')
     tablet_url = request.build_absolute_uri(reverse('tablet', args=[settings.tablet_token])) if settings.tablet_token else ''
+    checklists = list(Checklist.objects.filter(family=family))
+    for cl in checklists:
+        cl.person_name = _person_label(cl.person, settings)
+    reminders = list(RoutineReminder.objects.filter(family=family))
+    for r in reminders:
+        r.person_name = _person_label(r.person, settings)
+        r.effective_label = r.label or r.default_label(r.person_name)
+        r.days_summary = _days_summary(r.days)
     task_exceptions = list(TaskException.objects.filter(family=family, active=True).order_by('-date'))
     for exc in task_exceptions:
         exc.person_name = _person_label(exc.person, settings)
@@ -1034,7 +1765,15 @@ def settings_view(request):
     return render(request, 'planner/settings.html', {
         'settings': settings, 'activities': activities, 'custom_tasks': custom_tasks,
         'days': DAYS, 'day_full': DAY_FULL, 'members': members, 'tablet_url': tablet_url,
+        # Raccourcis du sélecteur de jours : la liste vient de task_logic, jamais du template.
+        'school_days_csv': ','.join(SCHOOL_DAYS), 'weekend_days_csv': ','.join(WEEKEND_DAYS),
         'task_exceptions': task_exceptions, 'wizard': wizard,
+        'reminders': reminders, 'reminder_phases': REMINDER_PHASE_CHOICES,
+        'checklists': checklists, 'frequencies': CUSTOM_TASK_FREQUENCIES,
+        'monthly_choices': MONTHLY_NTH_CHOICES, 'phases': PHASE_CHOICES,
+        'all_people': [(p, _person_label(p, settings)) for p in _family_people(settings)],
+        'today_iso': _today().isoformat(),
+        'kid_people': [(p, _person_label(p, settings)) for p in _kids_people(settings)],
     })
 
 
@@ -1091,6 +1830,99 @@ def delete_custom_task(request, pk):
     return redirect('settings')
 
 
+@login_required
+@parent_required
+@require_POST
+def apply_checklist(request, pk):
+    """Transforme une checklist en vraies tâches personnalisées.
+
+    Une checklist est un modèle : l'appliquer crée une CustomTask par élément, avec la
+    personne, le moment et la fréquence choisis au moment de l'application. Les tâches
+    créées vivent ensuite leur vie — on les réordonne, on les décale, on les supprime comme
+    n'importe quelle autre, et modifier la checklist plus tard ne les retouche pas.
+
+    Un élément déjà présent à l'identique (même personne, même intitulé) est passé : on
+    peut réappliquer une liste sans se retrouver avec des doublons."""
+    family = _get_family(request)
+    checklist = Checklist.objects.filter(pk=pk, family=family).first()
+    if checklist is None:
+        messages.error(request, "Checklist introuvable.")
+        return redirect('settings')
+
+    person = request.POST.get('apply_person', checklist.person)
+    if person not in PERSON_KEYS:
+        messages.error(request, "Personne invalide.")
+        return redirect('settings')
+    period = request.POST.get('apply_period', checklist.period)
+    if period not in dict(PHASE_CHOICES):
+        period = checklist.period
+    days_selected = [d for d in request.POST.getlist('apply_days') if d in DAYS]
+    freq, freq_error = _read_frequency(request, prefix='apply')
+    if freq_error:
+        messages.error(request, freq_error)
+        return redirect('settings')
+    if freq['frequency'] != 'once' and not days_selected:
+        messages.error(request, "Choisissez au moins un jour pour appliquer cette checklist.")
+        return redirect('settings')
+
+    existing = set(
+        CustomTask.objects.filter(family=family, person=person)
+        .values_list('label', flat=True)
+    )
+    created = 0
+    for label in checklist.items_list():
+        if label in existing:
+            continue
+        CustomTask.objects.create(
+            family=family, person=person, days=days_selected,
+            period=period, label=label, **freq,
+        )
+        existing.add(label)
+        created += 1
+
+    skipped = checklist.item_count() - created
+    if created:
+        message = f"{created} tâche{'s' if created > 1 else ''} ajoutée{'s' if created > 1 else ''} depuis « {checklist.name} »."
+        if skipped:
+            message += f" {skipped} déjà présente{'s' if skipped > 1 else ''}, non dupliquée{'s' if skipped > 1 else ''}."
+        messages.success(request, message)
+    else:
+        messages.success(request, f"Tout « {checklist.name} » était déjà en place, rien ajouté.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+@require_POST
+def delete_checklist(request, pk):
+    Checklist.objects.filter(pk=pk, family=_get_family(request)).delete()
+    messages.success(request, "Checklist supprimée.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+@require_POST
+def delete_reminder(request, pk):
+    RoutineReminder.objects.filter(pk=pk, family=_get_family(request)).delete()
+    messages.success(request, "Rappel supprimé.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+@require_POST
+def toggle_reminder(request, pk):
+    """Met un rappel en pause sans le supprimer — on garde l'horaire pour plus tard plutôt
+    que d'obliger à le ressaisir à chaque vacances scolaires."""
+    reminder = RoutineReminder.objects.filter(pk=pk, family=_get_family(request)).first()
+    if reminder:
+        reminder.active = not reminder.active
+        reminder.save(update_fields=['active'])
+        messages.success(request, "Rappel réactivé." if reminder.active else "Rappel mis en pause.")
+    return redirect('settings')
+
+
 @ratelimit(key='ip', rate='60/m', method='GET', block=True)
 def tablet_view(request, token):
     """Read-only, no-login kitchen-tablet display (see FamilySettings.tablet_token). Anyone
@@ -1106,10 +1938,10 @@ def tablet_view(request, token):
     custom_tasks = list(CustomTask.objects.filter(family=family))
 
     day = request.GET.get('day')
-    today_idx = datetime.date.today().weekday()
+    today_idx = _today().weekday()
     if day not in DAYS:
         day = DAYS[today_idx]
-    real_date = datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
+    real_date = _today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
     holiday_today = is_zone_b_holiday(real_date)
     holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
 
@@ -1159,20 +1991,28 @@ def tablet_view(request, token):
                   'is_today': i == today_idx, 'is_selected': d == day}
                  for i, d in enumerate(DAYS)]
 
-    week_start = _monday_of(datetime.date.today())
+    week_start = _monday_of(_today())
     menu_entry = WeeklyMenuEntry.objects.filter(
         family=family, week_start=week_start, day=day
     ).select_related('recipe').first()
     dinner = menu_entry.recipe if menu_entry else None
 
-    day_idx = DAYS.index(day)
-    upcoming = sorted(
-        activities, key=lambda a: ((DAYS.index(a.day) - day_idx) % 7, a.start_time or datetime.time.max)
-    )[:8]
-    for a in upcoming:
-        a.person_name = _person_label(a.person, settings)
+    # Les 7 prochains jours réels, via la même règle que les autres écrans : un événement
+    # ponctuel n'est listé qu'à sa date, jamais reconduit chaque semaine (l'ancien tri par
+    # écart de jour de semaine le faisait réapparaître indéfiniment).
+    upcoming = []
+    for offset in range(7):
+        d = real_date + datetime.timedelta(days=offset)
+        for a in sorted(activities_on(activities, d), key=lambda x: x.start_time or datetime.time.max):
+            a.person_name = _person_label(a.person, settings)
+            a.day_label = "aujourd'hui" if offset == 0 else DAY_FULL[DAYS[d.weekday()]]
+            upcoming.append(a)
+    upcoming = upcoming[:8]
 
+    digest = _day_digest(family, real_date)
     return render(request, 'planner/tablet.html', {
+        'digest': digest, 'digest_url': reverse('tablet_digest', args=[token]),
+        'digest_date': real_date.isoformat(),
         'kid_cards': [c for c in cards if c['person'] in ('fille', 'fils')],
         'parent_cards': [c for c in cards if c['person'] in ('maman', 'papa')],
         'day': day, 'day_chips': day_chips, 'real_date': real_date, 'settings': settings,
@@ -1196,15 +2036,21 @@ def edit_custom_task(request, pk):
     if request.method == 'POST':
         label = request.POST.get('task_label', '').strip()
         days_selected = [d for d in request.POST.getlist('task_days') if d in DAYS]
-        if label and days_selected:
+        freq, freq_error = _read_frequency(request)
+        needs_days = freq is not None and freq['frequency'] != 'once'
+        if freq_error:
+            messages.error(request, freq_error)
+        elif label and (days_selected or not needs_days):
             task.label = label
             task.person = request.POST.get('task_person', task.person)
             task.period = request.POST.get('task_period', task.period)
             task.days = days_selected
+            for field, value in freq.items():
+                setattr(task, field, value)
             task.save()
-            messages.success(request, "Tâche modifiée.")
+            messages.success(request, f"Tâche modifiée — {task.frequency_display()}.")
         else:
-            messages.error(request, "Merci d'indiquer un intitulé et au moins un jour.")
+            messages.error(request, _custom_task_error(label, days_selected))
     return redirect('settings')
 
 
@@ -1330,7 +2176,17 @@ def wizard_start(request):
     parent-only "Gérer les tâches" toggle on 'Aujourd'hui'."""
     if not _is_parent(request):
         raise PermissionDenied
-    return render(request, 'planner/wizard.html', {
-        'done': request.GET.get('done') == '1',
-        'start_url': f"{reverse('week')}?wizard=1&step=1",
+    family = _get_family(request)
+    settings = FamilySettings.load(family)
+    week_start = _week_start_from_request(request)
+    steps = _week_preparation(family, settings, week_start)
+    ready = [s for s in steps if s['state'] == 'ok']
+    context = _week_context(week_start)
+    context.update({
+        'steps': steps,
+        'ready_count': len(ready),
+        'all_ready': len(ready) == len(steps),
+        'state_labels': WEEK_STATE_LABELS,
+        'start_url': f"{reverse('week')}?wizard=1&step=1&week={week_start.isoformat()}",
     })
+    return render(request, 'planner/wizard.html', context)

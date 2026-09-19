@@ -1,0 +1,14 @@
+{% comment %}
+Bandeau « semaine du … au … » avec ses deux flèches. Attend le contexte produit par
+views._week_context (week_start / week_end / week_prev / week_next / is_current_week /
+is_future_week). Partagé par le menu, les courses et la préparation de semaine, pour que
+les trois écrans parlent de la semaine choisie exactement de la même façon.
+{% endcomment %}
+<div class="week-banner">
+  Semaine du {{ week_start|date:"j F" }} au {{ week_end|date:"j F Y" }}
+  {% if is_current_week %}<span class="week-tag">semaine en cours</span>
+  {% elif is_future_week %}<span class="week-tag next">à venir</span>
+  {% else %}<span class="week-tag past">passée</span>{% endif %}
+  <a class="week-switch" href="?week={{ week_prev }}">← précédente</a>
+  <a class="week-switch" href="?week={{ week_next }}">suivante →</a>
+</div>

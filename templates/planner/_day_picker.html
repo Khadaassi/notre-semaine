@@ -1,0 +1,34 @@
+{% comment %}
+Reusable day selector for a recurring task: seven tactile toggles + the four shortcuts
+(tous les jours / jours d'école / week-end / personnaliser) + a live summary.
+
+Included by settings.html for both the "add" and the "edit" CustomTask forms — one instance
+each, independent (the JS in settings.html scopes everything to the enclosing
+[data-daypicker]). Values post as repeated checkboxes read with request.POST.getlist.
+
+Expects in context: days (ordered keys), school_days_csv / weekend_days_csv (from
+task_logic.SCHOOL_DAYS / WEEKEND_DAYS — never hardcoded here), and optionally
+selected_days (defaults to none selected, i.e. the "add" form) and day_field (the POST
+field name, `task_days` by default — the reminder form posts `rem_days` on the same
+component rather than duplicating it).
+{% endcomment %}
+<div class="daypicker" data-daypicker
+     data-school-days="{{ school_days_csv }}" data-weekend-days="{{ weekend_days_csv }}">
+  <div class="daypicker-presets" role="group" aria-label="Raccourcis de sélection des jours">
+    <button type="button" class="daypicker-preset" data-preset="all" aria-pressed="false">Tous les jours</button>
+    <button type="button" class="daypicker-preset" data-preset="school" aria-pressed="false">Jours d'école</button>
+    <button type="button" class="daypicker-preset" data-preset="weekend" aria-pressed="false">Week-end</button>
+    <button type="button" class="daypicker-preset" data-preset="custom" aria-pressed="false">Personnaliser</button>
+  </div>
+  <div class="daypicker-days">
+    {% for d in days %}
+      <label class="daytoggle">
+        <input type="checkbox" name="{{ day_field|default:'task_days' }}" value="{{ d }}"
+               {% if selected_days and d in selected_days %}checked{% endif %}>
+        <span class="daytoggle-label">{{ d|slice:":3"|capfirst }}</span>
+        <span class="visually-hidden">{{ d|capfirst }}</span>
+      </label>
+    {% endfor %}
+  </div>
+  <p class="daypicker-summary" data-daypicker-summary aria-live="polite"></p>
+</div>

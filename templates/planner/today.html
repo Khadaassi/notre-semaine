@@ -1,16 +1,21 @@
 {% extends "planner/base.html" %}
+{% load fr %}
 {% block content %}
 {% if is_parent %}
 <div class="card wizard-entry-card">
   <div class="wizard-entry-row">
     <div>
       <h2 style="margin-bottom:2px;">Préparer notre semaine</h2>
-      <p class="hint" style="margin:0;">Parcours guidé : événements, répartition des tâches, menus, courses.</p>
+      <p class="hint" style="margin:0;">
+        {% if prep_all_ready %}Tout est prêt pour cette semaine.
+        {% else %}{{ prep_ready_count }} étape{{ prep_ready_count|pluriel }} sur 4 {{ prep_ready_count|pluriel:"est,sont" }} prête{{ prep_ready_count|pluriel }} — événements, tâches, menus, courses.{% endif %}
+      </p>
     </div>
-    <a href="{% url 'wizard_start' %}" class="wizard-entry-btn">Commencer →</a>
+    <a href="{% url 'wizard_start' %}" class="wizard-entry-btn">{% if prep_all_ready %}Voir le bilan{% else %}Continuer →{% endif %}</a>
   </div>
 </div>
 {% endif %}
+{% include "planner/_sync_note.html" %}
 <div class="today-toolbar">
   <div class="hint" style="margin:0;">{{ real_date|date:"l j F Y"|capfirst }}</div>
   <div class="toolbar-btns">
@@ -73,6 +78,17 @@
   </div>
   {% endif %}
 </div>
+{% endif %}
+
+{% if show_routine_entry %}
+<a class="routine-entry" href="{% url 'routine' %}">
+  <span class="re-icon"><span class="row-icon icon-checklist"></span></span>
+  <span class="re-text">
+    <strong>Commencer nos routines</strong>
+    <span class="re-sub">{% if routine_remaining %}Une tâche à la fois, chacun de son côté — {{ routine_remaining }} restante{{ routine_remaining|pluralize }}{% else %}Tout est fait pour aujourd'hui, bravo !{% endif %}</span>
+  </span>
+  <span class="re-go">›</span>
+</a>
 {% endif %}
 
 <div class="kidgrid">
@@ -214,6 +230,8 @@ document.querySelectorAll('.task-toggle').forEach(cb=>{
         return r.json();
       })
       .then(data=>{
+        // Notre propre écriture : on réaligne l'empreinte pour ne pas se signaler à soi-même.
+        if (window.nsSyncAck) window.nsSyncAck();
         if (wasChecked && (person === 'fille' || person === 'fils') &&
             pct === 100 && !celebratedPhase[phaseKey]) {
           celebratedPhase[phaseKey] = true;

@@ -1,24 +1,33 @@
 import datetime
 import importlib
+import re
 from decimal import Decimal
 
 from django.apps import apps
 from django.apps import apps as django_apps
 from django.contrib.auth.models import User
+from django.contrib.messages import get_messages
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
+from django.utils import timezone
+from unittest.mock import patch
 
 from .forms import RecipeForm, parse_ingredients_text
 from .models import (
     Family, FamilySettings, FamilyMembership, PARENT_ROLES, StarAward, KidStars,
     TaskCompletion, TaskException, Activity, Recipe, GroceryItem, WeeklyMenuEntry,
-    CustomTask, DayMode,
+    CustomTask, DayMode, HelpRequest, RoutineReminder, Checklist,
 )
-from .task_logic import is_zone_b_holiday, ZONE_B_HOLIDAYS, DAYS, tasks_for, find_schedule_conflicts
+from .task_logic import (
+    is_zone_b_holiday, ZONE_B_HOLIDAYS, DAYS, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for,
+    find_schedule_conflicts, occurs_on, activities_on, phase_for_time,
+    custom_task_occurs_on, nth_weekday_of_month, is_last_weekday_of_month, days_summary,
+)
 from .views import (
     _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _level_for, _monday_of,
+    _today, _due_reminders, _person_day_tasks, _week_preparation, _day_digest,
 )
 
 _ingredient_migration = importlib.import_module('planner.migrations.0016_migrate_ingredient_format')
@@ -852,6 +861,237 @@ class HomeHighlightsTests(TestCase):
         resp = self.client.get(reverse('today'))
         self.assertIsNone(resp.context['tonight_recipe'])
 
+class SharedEventSelectionTests(TestCase):
+    """task_logic.occurs_on / activities_on : une seule règle de sélection, partagée par tous
+    les écrans. Un événement ponctuel n'existe qu'à sa date et ne se répète jamais."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Ev', invite_code='EVENTFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.monday = _real_date_for_day('lundi')
+        self.next_monday = self.monday + datetime.timedelta(days=7)
+
+    def _activity(self, **kw):
+        kw.setdefault('person', 'fille')
+        kw.setdefault('label', 'Natation')
+        kw.setdefault('day', 'lundi')
+        return Activity.objects.create(family=self.family, **kw)
+
+    def test_recurring_activity_happens_every_matching_weekday(self):
+        act = self._activity()
+        self.assertTrue(occurs_on(act, self.monday))
+        self.assertTrue(occurs_on(act, self.next_monday))
+        self.assertFalse(occurs_on(act, self.monday + datetime.timedelta(days=1)))
+
+    def test_one_off_happens_only_on_its_date_never_weekly(self):
+        act = self._activity(specific_date=self.monday)
+        self.assertTrue(occurs_on(act, self.monday))
+        # Même jour de la semaine, semaine suivante : ne doit PAS réapparaître.
+        self.assertFalse(occurs_on(act, self.next_monday))
+
+    def test_activities_on_mixes_recurring_and_one_off_for_that_date(self):
+        recurring = self._activity(label='Piano')
+        one_off = self._activity(label='Dentiste', specific_date=self.monday, day='jeudi')
+        today_ids = {a.id for a in activities_on(list(Activity.objects.all()), self.monday)}
+        self.assertEqual(today_ids, {recurring.id, one_off.id})
+        later_ids = {a.id for a in activities_on(list(Activity.objects.all()), self.next_monday)}
+        self.assertEqual(later_ids, {recurring.id})
+
+    def test_one_off_absent_from_generated_tasks_on_other_weeks(self):
+        act = self._activity(label='Dentiste', specific_date=self.monday, start_time=datetime.time(10, 0))
+        acts = list(Activity.objects.all())
+        ids_that_day = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, acts, date=self.monday)}
+        ids_next_week = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, acts, date=self.next_monday)}
+        self.assertIn(f'activite_{act.id}', ids_that_day)
+        self.assertNotIn(f'activite_{act.id}', ids_next_week)
+
+    def test_week_view_shows_a_one_off_only_on_its_date(self):
+        parent = User.objects.create_user('evparent', password='pass12345')
+        FamilyMembership.objects.create(user=parent, family=self.family, role='maman')
+        self.client.force_login(parent)
+        self._activity(label='Dentiste', specific_date=self.monday, day='lundi')
+        this_week = self.client.get(reverse('week'), {'week': _monday_of(self.monday).isoformat()})
+        next_week = self.client.get(reverse('week'), {'week': _monday_of(self.next_monday).isoformat()})
+        self.assertContains(this_week, 'Dentiste')
+        self.assertNotContains(next_week, 'Dentiste')
+
+
+class ActivityTaskShapeTests(TestCase):
+    """Les tâches issues d'une activité : identifiant stable (pk, pas la position) et phase
+    déduite de l'heure de début plutôt que « soir » systématique."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Sh', invite_code='SHAPEFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.monday = _real_date_for_day('lundi')
+
+    def test_task_id_follows_the_activity_pk_not_its_position(self):
+        first = Activity.objects.create(family=self.family, person='fille', label='A', day='lundi')
+        second = Activity.objects.create(family=self.family, person='fille', label='B', day='lundi')
+        acts = [first, second]
+        ids = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, acts, date=self.monday)}
+        self.assertIn(f'activite_{first.id}', ids)
+        self.assertIn(f'activite_{second.id}', ids)
+
+        # La première disparaît : l'identifiant de la seconde ne bouge pas.
+        ids_after = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, [second], date=self.monday)}
+        self.assertIn(f'activite_{second.id}', ids_after)
+        self.assertNotIn(f'activite_{first.id}', ids_after)
+
+    def test_morning_activity_is_not_filed_under_the_evening_routine(self):
+        morning = Activity.objects.create(family=self.family, person='fille', label='Piscine',
+                                          day='lundi', start_time=datetime.time(9, 0))
+        evening = Activity.objects.create(family=self.family, person='fille', label='Judo',
+                                          day='lundi', start_time=datetime.time(19, 0))
+        tasks = tasks_for('fille', 'lundi', self.settings, [morning, evening], date=self.monday)
+        by_id = {t['id']: t for t in tasks}
+        self.assertEqual(by_id[f'activite_{morning.id}']['period'], 'matin')
+        self.assertEqual(by_id[f'activite_{evening.id}']['period'], 'soir')
+
+    def test_phase_for_time_cutoffs(self):
+        self.assertEqual(phase_for_time(datetime.time(8, 0)), 'matin')
+        self.assertEqual(phase_for_time(datetime.time(12, 0)), 'journee')
+        self.assertEqual(phase_for_time(datetime.time(17, 59)), 'journee')
+        self.assertEqual(phase_for_time(datetime.time(18, 0)), 'soir')
+        self.assertEqual(phase_for_time(None), 'soir')
+
+
+class TripAssignmentTests(TestCase):
+    """Les trajets vont à l'adulte réellement désigné (accompanied_by / picked_up_by), plus
+    systématiquement au père ; sans personne désignée, aucune tâche n'est inventée."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Tr', invite_code='TRIPFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.settings.papa_travaille = True
+        self.settings.save()
+        self.monday = _real_date_for_day('lundi')
+
+    def _tasks(self, person):
+        acts = list(Activity.objects.filter(family=self.family))
+        return {t['id'] for t in tasks_for(person, 'lundi', self.settings, acts, date=self.monday)}
+
+    def test_drop_off_goes_to_the_designated_parent(self):
+        act = Activity.objects.create(
+            family=self.family, person='fille', label='Natation', day='lundi',
+            start_time=datetime.time(17, 0), accompanied_by='maman',
+        )
+        self.assertIn(f'drive_{act.id}', self._tasks('maman'))
+        self.assertNotIn(f'drive_{act.id}', self._tasks('papa'))
+
+    def test_pick_up_can_be_a_different_parent_than_the_drop_off(self):
+        act = Activity.objects.create(
+            family=self.family, person='fils', label='Judo', day='lundi',
+            start_time=datetime.time(17, 0), end_time=datetime.time(18, 0),
+            accompanied_by='maman', picked_up_by='papa',
+        )
+        self.assertIn(f'drive_{act.id}', self._tasks('maman'))
+        self.assertNotIn(f'pickup_{act.id}', self._tasks('maman'))
+        self.assertIn(f'pickup_{act.id}', self._tasks('papa'))
+
+    def test_activity_without_a_designated_adult_creates_no_trip_task(self):
+        act = Activity.objects.create(
+            family=self.family, person='fille', label='Danse', day='lundi',
+            start_time=datetime.time(17, 0),
+        )
+        for person in ('maman', 'papa'):
+            self.assertNotIn(f'drive_{act.id}', self._tasks(person))
+            self.assertNotIn(f'pickup_{act.id}', self._tasks(person))
+
+    def test_no_duplicate_trip_task_for_the_same_activity(self):
+        act = Activity.objects.create(
+            family=self.family, person='fille', label='Natation', day='lundi',
+            start_time=datetime.time(17, 0), accompanied_by='papa',
+        )
+        acts = list(Activity.objects.filter(family=self.family))
+        ids = [t['id'] for t in tasks_for('papa', 'lundi', self.settings, acts, date=self.monday)]
+        self.assertEqual(ids.count(f'drive_{act.id}'), 1)
+
+
+class WeekContextPropagationTests(TestCase):
+    """La semaine choisie sur le semainier doit suivre sur les menus, les courses et la
+    préparation de semaine — et surtout ne jamais faire écrire dans la semaine courante par
+    accident après une soumission de formulaire."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Wk', invite_code='WEEKCTXFAM1')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('wkparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.this_monday = _monday_of(datetime.date.today())
+        self.next_monday = self.this_monday + datetime.timedelta(days=7)
+        self.recipe = Recipe.objects.create(family=self.family, name='Soupe', category='Soupe',
+                                            ingredients=[{'name': 'Carotte', 'quantity': 200, 'unit': 'g'}])
+
+    def test_menu_reads_the_requested_week(self):
+        WeeklyMenuEntry.objects.create(family=self.family, week_start=self.next_monday,
+                                       day='lundi', recipe=self.recipe)
+        resp = self.client.get(reverse('menu'), {'week': self.next_monday.isoformat()})
+        self.assertEqual(resp.context['week_start'], self.next_monday)
+        self.assertFalse(resp.context['is_current_week'])
+        selected = {r['day']: r['selected'] for r in resp.context['day_rows']}
+        self.assertEqual(selected['lundi'], self.recipe.id)
+
+    def test_setting_a_meal_writes_to_the_chosen_week_not_the_current_one(self):
+        resp = self.client.post(
+            f"{reverse('menu')}?week={self.next_monday.isoformat()}",
+            {'set_day': 'mardi', 'recipe_id': self.recipe.id, 'week': self.next_monday.isoformat()},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(WeeklyMenuEntry.objects.filter(
+            family=self.family, week_start=self.next_monday, day='mardi', recipe=self.recipe).exists())
+        self.assertFalse(WeeklyMenuEntry.objects.filter(
+            family=self.family, week_start=self.this_monday, day='mardi').exists())
+
+    def test_redirect_after_submission_keeps_the_week(self):
+        resp = self.client.post(
+            f"{reverse('menu')}?week={self.next_monday.isoformat()}",
+            {'set_day': 'mardi', 'recipe_id': self.recipe.id, 'week': self.next_monday.isoformat()},
+        )
+        self.assertIn(f'week={self.next_monday.isoformat()}', resp['Location'])
+
+    def test_copy_to_courses_tags_items_with_the_prepared_week(self):
+        WeeklyMenuEntry.objects.create(family=self.family, week_start=self.next_monday,
+                                       day='lundi', recipe=self.recipe)
+        self.client.post(
+            f"{reverse('menu')}?week={self.next_monday.isoformat()}",
+            {'copy_to_courses': '1', 'week': self.next_monday.isoformat()},
+        )
+        item = GroceryItem.objects.get(family=self.family, name='Carotte')
+        self.assertEqual(item.week_start, self.next_monday)
+
+    def test_courses_of_another_week_are_not_shown_nor_overwritten(self):
+        other = GroceryItem.objects.create(family=self.family, name='Poireau',
+                                           week_start=self.this_monday, category='Menu de la semaine')
+        manual = GroceryItem.objects.create(family=self.family, name='Éponges', category='Ajoutés')
+        resp = self.client.get(reverse('maison'), {'week': self.next_monday.isoformat()})
+        shown = {i.name for items in resp.context['grouped'].values() for i in items}
+        self.assertNotIn('Poireau', shown)        # article d'une autre semaine : mis de côté
+        self.assertIn('Éponges', shown)           # ajout manuel : valable quelle que soit la semaine
+        self.assertEqual(resp.context['other_week_count'], 1)
+        other.refresh_from_db()
+        self.assertEqual(other.week_start, self.this_monday)   # jamais réécrit
+
+    def test_adding_an_item_from_a_prepared_week_keeps_that_week_in_the_redirect(self):
+        resp = self.client.post(reverse('add_grocery'),
+                                {'name': 'Levure', 'week': self.next_monday.isoformat()})
+        self.assertIn(f'week={self.next_monday.isoformat()}', resp['Location'])
+        # Un ajout manuel n'appartient à aucune semaine : il reste visible partout.
+        self.assertIsNone(GroceryItem.objects.get(family=self.family, name='Levure').week_start)
+
+    def test_invalid_week_param_falls_back_to_the_current_week(self):
+        resp = self.client.get(reverse('menu'), {'week': 'pas-une-date'})
+        self.assertEqual(resp.context['week_start'], self.this_monday)
+        self.assertTrue(resp.context['is_current_week'])
+
+    def test_semainier_links_to_the_same_week_on_menu_and_courses(self):
+        resp = self.client.get(reverse('week'), {'week': self.next_monday.isoformat()})
+        html = resp.content.decode()
+        self.assertIn(f"{reverse('menu')}?week={self.next_monday.isoformat()}", html)
+        self.assertIn(f"{reverse('maison')}?week={self.next_monday.isoformat()}", html)
+
+
 class WeekNavigationTests(TestCase):
     """week_view defaults to the current calendar week when ?week= is absent (unchanged
     behavior), and navigates to whichever Monday ?week= points at otherwise — snapping any
@@ -1175,6 +1415,98 @@ class CustomTaskSettingsViewTests(TestCase):
         self.assertEqual(task.person, 'fils')
 
 
+class DayPickerTests(TestCase):
+    """The day picker (_day_picker.html): one submit stores one recurring task, the school-day
+    shortcut reads task_logic.SCHOOL_DAYS rather than a hardcoded list, editing prefills the
+    right boxes, and an empty selection is refused with a message that says which half is
+    missing."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='DP', invite_code='DAYPICKFAM1')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('dpparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+
+    def _messages(self, resp):
+        return [str(m) for m in get_messages(resp.wsgi_request)]
+
+    def test_selecting_all_seven_days_creates_one_task_not_seven(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fille', 'task_label': 'Quotidienne',
+            'task_days': list(DAYS), 'task_period': 'matin',
+        })
+        self.assertEqual(resp.status_code, 302)
+        tasks = CustomTask.objects.filter(family=self.family, label='Quotidienne')
+        self.assertEqual(tasks.count(), 1)
+        self.assertEqual(sorted(tasks.first().days), sorted(DAYS))
+        self.assertIn('tous les jours', self._messages(resp)[-1])
+
+    def test_school_days_shortcut_matches_task_logic_config(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fils', 'task_label': 'Cartable',
+            'task_days': list(SCHOOL_DAYS), 'task_period': 'soir',
+        })
+        task = CustomTask.objects.get(family=self.family, label='Cartable')
+        self.assertEqual(sorted(task.days), sorted(SCHOOL_DAYS))
+        self.assertNotIn('mercredi', task.days)  # mercredi n'est pas un jour d'école ici
+        self.assertIn("les jours d'école", self._messages(resp)[-1])
+
+    def test_weekend_shortcut_selects_saturday_and_sunday(self):
+        self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fille', 'task_label': 'Grasse mat',
+            'task_days': list(WEEKEND_DAYS), 'task_period': 'matin',
+        })
+        task = CustomTask.objects.get(family=self.family, label='Grasse mat')
+        self.assertEqual(sorted(task.days), ['dimanche', 'samedi'])
+
+    def test_picker_renders_a_checkbox_per_day_with_shortcut_config(self):
+        resp = self.client.get(reverse('settings'))
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode()
+        for day in DAYS:
+            self.assertIn(f'name="task_days" value="{day}"', html)
+        self.assertIn(f'data-school-days="{",".join(SCHOOL_DAYS)}"', html)
+        self.assertIn(f'data-weekend-days="{",".join(WEEKEND_DAYS)}"', html)
+
+    def test_edit_form_prefills_the_tasks_current_days(self):
+        CustomTask.objects.create(
+            family=self.family, person='fille', days=['mardi', 'jeudi'], period='soir', label='Danse',
+        )
+        html = self.client.get(reverse('settings')).content.decode()
+        checked = {
+            m.group(1) for m in
+            re.finditer(r'name="task_days" value="(\w+)"\s+checked', html)
+        }
+        # Seul le formulaire de modification préremplit : le formulaire d'ajout reste vierge.
+        self.assertEqual(checked, {'mardi', 'jeudi'})
+
+    def test_empty_selection_is_refused_with_an_explicit_message(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fille', 'task_label': 'SansJour', 'task_period': 'matin',
+        })
+        self.assertFalse(CustomTask.objects.filter(family=self.family, label='SansJour').exists())
+        self.assertIn('au moins un jour', self._messages(resp)[-1])
+
+    def test_missing_label_message_names_the_label_not_the_days(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_person': 'fille', 'task_days': ['lundi'], 'task_period': 'matin',
+        })
+        message = self._messages(resp)[-1]
+        self.assertIn('intitulé', message)
+        self.assertNotIn('au moins un jour', message)
+
+    def test_editing_to_an_empty_selection_keeps_the_previous_days(self):
+        task = CustomTask.objects.create(
+            family=self.family, person='fille', days=['lundi'], period='matin', label='Garder',
+        )
+        self.client.post(reverse('edit_custom_task', args=[task.id]), {
+            'task_person': 'fille', 'task_label': 'Garder', 'task_period': 'matin',
+        })
+        task.refresh_from_db()
+        self.assertEqual(task.days, ['lundi'])
+
+
 class DayModeStarNonPenalizationTests(TestCase):
     """A person marked 'absence' or 'allegee' for a day ends up with fewer checkable tasks
     (see DayModeTaskFilteringTests), but that must never block their star: completing
@@ -1462,11 +1794,14 @@ class WizardEntryTests(TestCase):
         self.assertContains(resp, 'Commencer')
         self.assertContains(resp, f"{reverse('week')}?wizard=1&amp;step=1")
 
-    def test_parent_sees_recap_card_when_done(self):
+    def test_finishing_the_walkthrough_does_not_declare_the_week_ready(self):
+        """Parcourir les quatre écrans sans rien y changer ne rend pas la semaine prête :
+        l'ancien écran « Semaine prête ! » après ?done=1 disait le contraire."""
         self.client.force_login(self.parent)
         resp = self.client.get(reverse('wizard_start'), {'done': '1'})
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'Semaine prête')
+        self.assertNotContains(resp, 'Semaine prête')
+        self.assertContains(resp, 'À faire')
         self.assertContains(resp, reverse('week'))
         self.assertContains(resp, reverse('maison'))
 
@@ -1511,11 +1846,14 @@ class WizardBannerDisplayTests(TestCase):
         self.assertContains(resp, 'Étape 4/4')
         self.assertContains(resp, f"{reverse('maison')}?wizard=1&amp;step=4")
 
-    def test_maison_step_four_is_the_last_step_with_a_finish_button(self):
+    def test_maison_step_four_ends_on_the_real_state_not_on_a_declared_success(self):
+        """La dernière étape mène au bilan, qui relit l'état des données — elle ne déclare
+        pas la semaine terminée du seul fait qu'on est arrivé au bout des quatre écrans."""
         resp = self.client.get(reverse('maison'), {'wizard': '1', 'step': '4'})
         self.assertContains(resp, 'wizard-banner')
         self.assertContains(resp, 'Étape 4/4')
-        self.assertContains(resp, 'Terminer le parcours')
+        self.assertContains(resp, 'Voir le bilan')
+        self.assertNotContains(resp, 'Terminer le parcours')
         self.assertNotContains(resp, 'Étape suivante')
 
     def test_maison_has_no_banner_without_wizard_param(self):
@@ -1545,12 +1883,20 @@ class WizardCopyToCoursesHandoffTests(TestCase):
         resp = self.client.post(
             f"{reverse('menu')}?wizard=1&step=4", {'copy_to_courses': '1'}
         )
-        self.assertRedirects(resp, f"{reverse('maison')}?wizard=1&step=4")
+        # La redirection porte aussi la semaine préparée (WeekContextPropagationTests) : on
+        # vérifie donc la destination et les paramètres qui comptent, pas la chaîne exacte.
+        path, _, query = resp['Location'].partition('?')
+        self.assertEqual(path, reverse('maison'))
+        self.assertIn('wizard=1', query)
+        self.assertIn('step=4', query)
         self.assertTrue(GroceryItem.objects.filter(family=self.family, name='Pâtes').exists())
 
     def test_copy_to_courses_outside_wizard_still_redirects_to_menu(self):
         resp = self.client.post(reverse('menu'), {'copy_to_courses': '1'})
-        self.assertRedirects(resp, reverse('menu'))
+        path, _, query = resp['Location'].partition('?')
+        self.assertEqual(path, reverse('menu'))
+        self.assertNotIn('wizard', query)
+        self.assertNotIn('step', query)
 
 
 class WizardStepPreservedAcrossSamePageActionsTests(TestCase):
@@ -1570,13 +1916,19 @@ class WizardStepPreservedAcrossSamePageActionsTests(TestCase):
         resp = self.client.post(f"{reverse('menu')}?wizard=1&step=3", {
             'set_day': '1', 'day': 'lundi', 'recipe_id': self.recipe.id,
         })
-        self.assertRedirects(resp, f"{reverse('menu')}?wizard=1&step=3")
+        path, _, query = resp['Location'].partition('?')
+        self.assertEqual(path, reverse('menu'))
+        self.assertIn('wizard=1', query)
+        self.assertIn('step=3', query)
 
     def test_set_day_outside_wizard_redirects_without_wizard_params(self):
         resp = self.client.post(reverse('menu'), {
             'set_day': '1', 'day': 'lundi', 'recipe_id': self.recipe.id,
         })
-        self.assertRedirects(resp, reverse('menu'))
+        path, _, query = resp['Location'].partition('?')
+        self.assertEqual(path, reverse('menu'))
+        self.assertNotIn('wizard', query)
+        self.assertNotIn('step', query)
 
     def test_settings_save_inside_wizard_redirects_back_with_step_kept(self):
         resp = self.client.post(f"{reverse('settings')}?wizard=1&step=2", {
@@ -1584,3 +1936,1385 @@ class WizardStepPreservedAcrossSamePageActionsTests(TestCase):
             'tt2_day': 'lundi', 'courses_day': 'samedi',
         })
         self.assertRedirects(resp, f"{reverse('settings')}?wizard=1&step=2")
+
+
+class GuidedRoutineTests(TestCase):
+    """Routine guidée : deux espaces sur le même écran, une seule source de progression.
+
+    Ce qui est vérifié ici est exactement ce qui pouvait casser en ajoutant un deuxième
+    écran de pointage : que les deux enfants n'écrivent pas l'un sur l'autre, que l'état
+    vienne de TaskCompletion (donc survive à un rechargement), qu'aucune étoile ne soit
+    attribuée deux fois parce qu'on a coché ici plutôt que sur la checklist, et que les
+    modes du jour, exceptions et réattributions s'appliquent comme sur « Aujourd'hui »."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Routine', invite_code='ROUTFAM1')
+        settings = FamilySettings.load(self.family)
+        settings.nb_enfants = 2
+        settings.fille_name = 'Aliyah'
+        settings.fils_name = 'Adam'
+        settings.save()
+        self.parent = User.objects.create_user('routparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.today = _today()
+        self.day = DAYS[self.today.weekday()]
+
+    def _spaces(self):
+        resp = self.client.get(reverse('routine'))
+        self.assertEqual(resp.status_code, 200)
+        return {s['person']: s for s in resp.context['spaces']}
+
+    def _toggle(self, person, task_id, done='1'):
+        return self.client.post(reverse('toggle_task'), {
+            'person': person, 'task_id': task_id, 'day': self.day, 'done': done,
+        })
+
+    def test_two_kids_get_their_own_independent_space(self):
+        spaces = self._spaces()
+        self.assertEqual(set(spaces), {'fille', 'fils'})
+        self.assertEqual(spaces['fille']['name'], 'Aliyah')
+        self.assertEqual(spaces['fils']['name'], 'Adam')
+        self.assertTrue(spaces['fille']['sequence'])
+        self.assertTrue(spaces['fils']['sequence'])
+
+    def test_one_kid_advancing_does_not_move_the_other(self):
+        before = self._spaces()
+        fille_first = before['fille']['current']['id']
+        fils_current_before = before['fils']['current']['id']
+
+        self._toggle('fille', fille_first)
+
+        after = self._spaces()
+        self.assertEqual(after['fille']['done_count'], 1)
+        self.assertNotEqual(after['fille']['current']['id'], fille_first)
+        # L'autre espace n'a strictement pas bougé.
+        self.assertEqual(after['fils']['done_count'], 0)
+        self.assertEqual(after['fils']['current']['id'], fils_current_before)
+
+    def test_progress_survives_a_reload_because_it_comes_from_taskcompletion(self):
+        first = self._spaces()['fille']['current']['id']
+        self._toggle('fille', first)
+
+        # Nouveau GET = nouvelle dérivation depuis la base, pas un état JS gardé en page.
+        reloaded = self._spaces()['fille']
+        self.assertEqual(reloaded['done_count'], 1)
+        done_ids = [t['id'] for t in reloaded['sequence'] if t['done']]
+        self.assertEqual(done_ids, [first])
+        self.assertTrue(
+            TaskCompletion.objects.filter(
+                family=self.family, person='fille', date=self.today, task_id=first, done=True
+            ).exists()
+        )
+
+    def test_same_task_ids_as_the_checklist_so_both_screens_share_one_progression(self):
+        routine_ids = {t['id'] for t in self._spaces()['fille']['sequence']}
+        self.assertEqual(routine_ids, set(_checkable_ids_for('fille', self.day, self.family)))
+
+    def test_finishing_the_routine_awards_exactly_one_star(self):
+        for task in self._spaces()['fille']['sequence']:
+            self._toggle('fille', task['id'])
+
+        space = self._spaces()['fille']
+        self.assertTrue(space['finished'])
+        self.assertEqual(space['remaining'], 0)
+        self.assertEqual(
+            StarAward.objects.filter(family=self.family, person='fille', date=self.today).count(), 1
+        )
+        self.assertEqual(KidStars.objects.get(family=self.family, person='fille').total, 1)
+
+    def test_rechecking_from_the_routine_does_not_award_a_second_star(self):
+        ids = [t['id'] for t in self._spaces()['fille']['sequence']]
+        for task_id in ids:
+            self._toggle('fille', task_id)
+        # On recoche la dernière tâche comme le ferait un double clic ou un retour en arrière.
+        self._toggle('fille', ids[-1], done='0')
+        self._toggle('fille', ids[-1])
+
+        self.assertEqual(
+            StarAward.objects.filter(family=self.family, person='fille', date=self.today).count(), 1
+        )
+        self.assertEqual(KidStars.objects.get(family=self.family, person='fille').total, 1)
+
+    def test_one_kid_finishing_leaves_the_other_star_untouched(self):
+        for task in self._spaces()['fille']['sequence']:
+            self._toggle('fille', task['id'])
+
+        self.assertTrue(StarAward.objects.filter(family=self.family, person='fille').exists())
+        self.assertFalse(StarAward.objects.filter(family=self.family, person='fils').exists())
+        self.assertFalse(self._spaces()['fils']['finished'])
+
+    def test_day_mode_applies_to_the_guided_routine(self):
+        DayMode.objects.update_or_create(
+            family=self.family, person='fille', date=self.today, defaults={'mode': 'allegee'}
+        )
+        space = self._spaces()['fille']
+        self.assertEqual(space['day_mode'], 'allegee')
+        # Règle métier : le Coran reste présent, en révision légère.
+        coran = [t for t in space['sequence'] if t['id'] == 'coran']
+        self.assertEqual(len(coran), 1)
+        self.assertIn('légère', coran[0]['label'])
+
+    def test_not_applicable_exception_is_left_out_of_the_sequence(self):
+        excluded = self._spaces()['fille']['sequence'][0]['id']
+        TaskException.objects.create(
+            family=self.family, person='fille', task_id=excluded,
+            kind='not_applicable', date=self.today,
+        )
+        ids = [t['id'] for t in self._spaces()['fille']['sequence']]
+        self.assertNotIn(excluded, ids)
+
+    def test_reassigned_task_leaves_the_kid_space(self):
+        handed = self._spaces()['fille']['sequence'][0]['id']
+        TaskException.objects.create(
+            family=self.family, person='fille', task_id=handed,
+            kind='reassigned', reassigned_to='maman', date=self.today,
+        )
+        ids = [t['id'] for t in self._spaces()['fille']['sequence']]
+        self.assertNotIn(handed, ids)
+
+    def test_help_request_is_raised_and_cleared_when_the_task_is_done(self):
+        task_id = self._spaces()['fille']['current']['id']
+
+        self.client.post(reverse('toggle_help'), {
+            'person': 'fille', 'task_id': task_id, 'help': '1',
+        })
+        self.assertTrue(self._spaces()['fille']['needs_help'])
+        self.assertTrue(
+            HelpRequest.objects.filter(
+                family=self.family, person='fille', task_id=task_id, active=True
+            ).exists()
+        )
+
+        self._toggle('fille', task_id)
+        self.assertFalse(
+            HelpRequest.objects.filter(
+                family=self.family, person='fille', task_id=task_id, active=True
+            ).exists()
+        )
+
+    def test_help_of_one_kid_does_not_flag_the_other(self):
+        spaces = self._spaces()
+        self.client.post(reverse('toggle_help'), {
+            'person': 'fille', 'task_id': spaces['fille']['current']['id'], 'help': '1',
+        })
+        after = self._spaces()
+        self.assertTrue(after['fille']['needs_help'])
+        self.assertFalse(after['fils']['needs_help'])
+
+    def test_help_is_refused_server_side_for_another_family(self):
+        other = Family.objects.create(name='Autre', invite_code='ROUTFAM2')
+        FamilySettings.load(other)
+        intruder = User.objects.create_user('intrus', password='pass12345')
+        FamilyMembership.objects.create(user=intruder, family=other, role='maman')
+        self.client.force_login(intruder)
+
+        self.client.post(reverse('toggle_help'), {
+            'person': 'fille', 'task_id': 'lit', 'help': '1',
+        })
+        # L'action n'a pu toucher que la famille de l'intrus, jamais la nôtre.
+        self.assertFalse(HelpRequest.objects.filter(family=self.family).exists())
+        self.assertTrue(HelpRequest.objects.filter(family=other).exists())
+
+    def test_routine_requires_login(self):
+        self.client.logout()
+        resp = self.client.get(reverse('routine'))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_toggle_help_rejects_get(self):
+        self.assertEqual(self.client.get(reverse('toggle_help')).status_code, 405)
+
+
+class LocalDateTests(TestCase):
+    """L'app doit dater la journée de la famille en heure locale Django (Europe/Paris) et
+    non sur l'horloge système : en production le serveur tourne en UTC, donc entre minuit
+    et 2 h du matin à Paris date.today() renvoie encore la veille."""
+
+    def test_today_follows_django_local_time(self):
+        self.assertEqual(_today(), timezone.localdate())
+
+    def test_today_differs_from_utc_date_when_paris_is_already_tomorrow(self):
+        # 23 h 30 UTC un 30 juin = 1 h 30 le 1er juillet à Paris.
+        instant = datetime.datetime(2025, 6, 30, 23, 30, tzinfo=datetime.timezone.utc)
+        with patch('django.utils.timezone.now', return_value=instant):
+            self.assertEqual(_today(), datetime.date(2025, 7, 1))
+            self.assertEqual(instant.date(), datetime.date(2025, 6, 30))
+
+
+class TemplateCommentSyntaxTests(TestCase):
+    """`{# ... #}` est un commentaire d'une seule ligne : s'il est ouvert sur une ligne et
+    fermé sur une autre, Django ne le reconnaît pas et son texte s'affiche tel quel dans la
+    page. C'est déjà arrivé deux fois (bandeau de navigation, cartes de tâches) ; un
+    commentaire sur plusieurs lignes doit utiliser {% comment %}...{% endcomment %}."""
+
+    def test_no_unterminated_single_line_comment_in_templates(self):
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent / 'templates'
+        offenders = []
+        for path in root.rglob('*.html'):
+            for lineno, line in enumerate(path.read_text().splitlines(), 1):
+                if '{#' in line and '#}' not in line.split('{#', 1)[1]:
+                    offenders.append(f'{path.relative_to(root)}:{lineno}')
+        self.assertEqual(offenders, [], f"commentaires {{# #}} non fermés sur leur ligne : {offenders}")
+
+
+class ReminderQuietHoursTests(TestCase):
+    """La plage de calme peut être à cheval sur minuit (20 h 30 -> 7 h) : c'est le cas normal,
+    pas un cas limite. Deux bornes égales veulent dire « pas de plage », jamais « toujours
+    silencieux » — sinon les rappels disparaîtraient sans explication."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Calme', invite_code='QUIETFA1')
+        self.settings = FamilySettings.load(self.family)
+
+    def test_overnight_range_covers_both_sides_of_midnight(self):
+        self.settings.quiet_start = datetime.time(20, 30)
+        self.settings.quiet_end = datetime.time(7, 0)
+        self.assertTrue(self.settings.in_quiet_hours(datetime.time(22, 0)))
+        self.assertTrue(self.settings.in_quiet_hours(datetime.time(2, 0)))
+        self.assertTrue(self.settings.in_quiet_hours(datetime.time(20, 30)))
+        self.assertFalse(self.settings.in_quiet_hours(datetime.time(7, 0)))
+        self.assertFalse(self.settings.in_quiet_hours(datetime.time(12, 0)))
+        self.assertFalse(self.settings.in_quiet_hours(datetime.time(20, 29)))
+
+    def test_same_day_range(self):
+        self.settings.quiet_start = datetime.time(13, 0)
+        self.settings.quiet_end = datetime.time(15, 0)
+        self.assertTrue(self.settings.in_quiet_hours(datetime.time(14, 0)))
+        self.assertFalse(self.settings.in_quiet_hours(datetime.time(12, 0)))
+        self.assertFalse(self.settings.in_quiet_hours(datetime.time(16, 0)))
+
+    def test_equal_bounds_mean_no_quiet_hours_at_all(self):
+        self.settings.quiet_start = self.settings.quiet_end = datetime.time(9, 0)
+        for hour in (0, 9, 15, 23):
+            self.assertFalse(self.settings.in_quiet_hours(datetime.time(hour, 0)))
+
+
+class RoutineReminderTests(TestCase):
+    """Rappels de routine : uniquement pour les enfants, uniquement dans l'application,
+    à l'heure locale de Paris, et jamais sur une routine déjà terminée."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Rappels', invite_code='REMFAM01')
+        self.settings = FamilySettings.load(self.family)
+        self.settings.nb_enfants = 2
+        self.settings.fille_name = 'Aliyah'
+        self.settings.fils_name = 'Adam'
+        # Plage de calme réduite à rien pour que les tests pilotent l'heure librement.
+        self.settings.quiet_start = self.settings.quiet_end = datetime.time(3, 0)
+        self.settings.save()
+        self.parent = User.objects.create_user('remparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.today = _today()
+        self.day = DAYS[self.today.weekday()]
+
+    def _reminder(self, person='fille', phase='matin', at=datetime.time(7, 30), days=None, label=''):
+        return RoutineReminder.objects.create(
+            family=self.family, person=person, phase=phase, at_time=at,
+            days=days if days is not None else list(DAYS), label=label,
+        )
+
+    def _at(self, hour, minute=0):
+        return datetime.datetime.combine(self.today, datetime.time(hour, minute))
+
+    def test_reminder_is_due_once_its_time_has_passed(self):
+        self._reminder(at=datetime.time(7, 30))
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(7, 0)), [])
+        due = _due_reminders(self.family, self.settings, self._at(8, 0))
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]['person'], 'fille')
+        self.assertEqual(due[0]['at_time'], '07:30')
+        self.assertGreater(due[0]['remaining'], 0)
+
+    def test_reminder_only_fires_on_its_own_days(self):
+        other_day = DAYS[(self.today.weekday() + 1) % 7]
+        self._reminder(days=[other_day])
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+    def test_no_reminder_during_quiet_hours(self):
+        self.settings.quiet_start = datetime.time(20, 0)
+        self.settings.quiet_end = datetime.time(7, 0)
+        self.settings.save()
+        self._reminder(phase='soir', at=datetime.time(19, 0))
+        self.assertEqual(len(_due_reminders(self.family, self.settings, self._at(19, 30))), 1)
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(21, 0)), [])
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(2, 0)), [])
+
+    def test_family_switch_silences_every_reminder(self):
+        self._reminder()
+        self.settings.reminders_enabled = False
+        self.settings.save()
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+    def test_paused_reminder_does_not_fire(self):
+        rem = self._reminder()
+        rem.active = False
+        rem.save(update_fields=['active'])
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+    def test_finished_routine_is_never_reminded(self):
+        rem = self._reminder(phase='matin')
+        due = _due_reminders(self.family, self.settings, self._at(23, 0))
+        self.assertEqual(len(due), 1)
+
+        # On coche tout ce que contient la phase visée, comme le ferait l'enfant.
+        _dm, _flat, phases = _person_day_tasks(
+            self.family, 'fille', self.day, self.today, self.settings,
+            [], [], {},
+        )
+        for phase_key, _label, tasks in phases:
+            if phase_key != rem.phase:
+                continue
+            for task in tasks:
+                if task['info'] or task['not_applicable']:
+                    continue
+                TaskCompletion.objects.update_or_create(
+                    family=self.family, person='fille', date=self.today,
+                    task_id=task['id'], defaults={'done': True},
+                )
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+    def test_snooze_silences_only_today(self):
+        rem = self._reminder()
+        resp = self.client.post(reverse('snooze_reminder'), {'reminder_id': rem.id})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+        rem.refresh_from_db()
+        self.assertEqual(rem.acked_on, self.today)
+        # Le lendemain il repart tout seul : rien à réactiver à la main.
+        rem.acked_on = self.today - datetime.timedelta(days=1)
+        rem.save(update_fields=['acked_on'])
+        self.assertEqual(len(_due_reminders(self.family, self.settings, self._at(23, 0))), 1)
+
+    def test_snooze_of_another_family_is_refused(self):
+        rem = self._reminder()
+        other = Family.objects.create(name='Autre', invite_code='REMFAM02')
+        FamilySettings.load(other)
+        intruder = User.objects.create_user('remintrus', password='pass12345')
+        FamilyMembership.objects.create(user=intruder, family=other, role='maman')
+        self.client.force_login(intruder)
+
+        resp = self.client.post(reverse('snooze_reminder'), {'reminder_id': rem.id})
+        self.assertEqual(resp.status_code, 404)
+        rem.refresh_from_db()
+        self.assertIsNone(rem.acked_on)
+
+    def test_reminders_are_scoped_to_the_family(self):
+        other = Family.objects.create(name='Autre2', invite_code='REMFAM03')
+        other_settings = FamilySettings.load(other)
+        other_settings.quiet_start = other_settings.quiet_end = datetime.time(3, 0)
+        other_settings.save()
+        RoutineReminder.objects.create(
+            family=other, person='fille', phase='matin',
+            at_time=datetime.time(6, 0), days=list(DAYS),
+        )
+        self.assertEqual(_due_reminders(self.family, self.settings, self._at(23, 0)), [])
+
+    def test_settings_form_creates_a_reminder(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_reminder': '1', 'rem_person': 'fille', 'rem_phase': 'soir',
+            'rem_time': '19h15', 'rem_days': ['lundi', 'mardi'], 'rem_label': 'Au dodo',
+        })
+        self.assertEqual(resp.status_code, 302)
+        rem = RoutineReminder.objects.get(family=self.family)
+        self.assertEqual(rem.at_time, datetime.time(19, 15))
+        self.assertEqual(rem.days, ['lundi', 'mardi'])
+        self.assertEqual(rem.label, 'Au dodo')
+
+    def test_settings_form_refuses_a_reminder_for_a_parent(self):
+        self.client.post(reverse('settings'), {
+            'add_reminder': '1', 'rem_person': 'maman', 'rem_phase': 'matin',
+            'rem_time': '07:30', 'rem_days': ['lundi'],
+        })
+        self.assertFalse(RoutineReminder.objects.filter(family=self.family).exists())
+
+    def test_settings_form_refuses_a_reminder_without_days_or_time(self):
+        self.client.post(reverse('settings'), {
+            'add_reminder': '1', 'rem_person': 'fille', 'rem_phase': 'matin',
+            'rem_time': '07:30', 'rem_days': [],
+        })
+        self.client.post(reverse('settings'), {
+            'add_reminder': '1', 'rem_person': 'fille', 'rem_phase': 'matin',
+            'rem_time': 'n\'importe quoi', 'rem_days': ['lundi'],
+        })
+        self.assertFalse(RoutineReminder.objects.filter(family=self.family).exists())
+
+    def test_quiet_hours_are_saved_from_the_settings_form(self):
+        self.client.post(reverse('settings'), {
+            'save_reminder_settings': '1', 'reminders_enabled': 'on',
+            'quiet_start': '21:00', 'quiet_end': '06:45',
+        })
+        self.settings.refresh_from_db()
+        self.assertTrue(self.settings.reminders_enabled)
+        self.assertEqual(self.settings.quiet_start, datetime.time(21, 0))
+        self.assertEqual(self.settings.quiet_end, datetime.time(6, 45))
+
+    def test_unchecking_the_switch_disables_reminders(self):
+        self.client.post(reverse('settings'), {
+            'save_reminder_settings': '1', 'quiet_start': '21:00', 'quiet_end': '06:45',
+        })
+        self.settings.refresh_from_db()
+        self.assertFalse(self.settings.reminders_enabled)
+
+    def test_pause_and_delete_from_settings(self):
+        rem = self._reminder()
+        self.client.post(reverse('toggle_reminder', args=[rem.pk]))
+        rem.refresh_from_db()
+        self.assertFalse(rem.active)
+        self.client.post(reverse('toggle_reminder', args=[rem.pk]))
+        rem.refresh_from_db()
+        self.assertTrue(rem.active)
+        self.client.post(reverse('delete_reminder', args=[rem.pk]))
+        self.assertFalse(RoutineReminder.objects.filter(pk=rem.pk).exists())
+
+    def test_a_kid_account_cannot_delete_a_reminder(self):
+        rem = self._reminder()
+        kid = User.objects.create_user('remkid', password='pass12345')
+        FamilyMembership.objects.create(user=kid, family=self.family, role='enfants')
+        self.client.force_login(kid)
+        self.client.post(reverse('delete_reminder', args=[rem.pk]))
+        self.assertTrue(RoutineReminder.objects.filter(pk=rem.pk).exists())
+
+    def test_json_endpoint_returns_the_due_reminders(self):
+        self._reminder(at=datetime.time(0, 1))
+        resp = self.client.get(reverse('reminders_json'))
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()['reminders']
+        self.assertTrue(any(r['person'] == 'fille' for r in payload))
+
+    def test_json_endpoint_requires_login(self):
+        self.client.logout()
+        resp = self.client.get(reverse('reminders_json'))
+        self.assertEqual(resp.status_code, 302)
+
+    def test_banner_is_rendered_server_side_without_javascript(self):
+        self._reminder(at=datetime.time(0, 1), label='Debout !')
+        resp = self.client.get(reverse('today'))
+        self.assertContains(resp, 'Debout !')
+
+
+class DayPickerReuseTests(TestCase):
+    """Le sélecteur de jours est partagé par plusieurs formulaires avec des noms de champ
+    différents (`task_days`, `rem_days`). Son JS doit sélectionner les cases par le
+    composant, pas par un nom de champ codé en dur : sinon les raccourcis « tous les jours /
+    jours d'école / week-end » ne font rien dans le formulaire réutilisé, sans erreur
+    visible. C'est exactement ce qui est arrivé en ajoutant les rappels."""
+
+    def test_day_picker_js_does_not_hardcode_a_field_name(self):
+        import pathlib
+        js = (pathlib.Path(__file__).resolve().parent.parent
+              / 'templates' / 'planner' / 'settings.html').read_text()
+        self.assertNotIn(
+            'querySelectorAll(\'input[name="task_days"]\')', js,
+            "le sélecteur de jours doit prendre ses cases par le composant, pas par un nom de champ",
+        )
+
+    def test_day_picker_template_allows_a_custom_field_name(self):
+        import pathlib
+        tpl = (pathlib.Path(__file__).resolve().parent.parent
+               / 'templates' / 'planner' / '_day_picker.html').read_text()
+        self.assertIn('day_field', tpl)
+
+
+class WeekPreparationStateTests(TestCase):
+    """Le bilan de « Préparer notre semaine » est calculé, pas déclaré.
+
+    Chaque étape est relue dans les données de la semaine concernée : ouvrir un écran sans
+    rien y changer ne rend rien « prêt », et une semaine préparée reste prête sans qu'on
+    rouvre le parcours. C'est tout l'écart avec l'ancien « 4 clics = semaine prête »."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Prep', invite_code='PREPFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('prepparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.week = _monday_of(_today())
+
+    def _steps(self, week=None):
+        return {s['step']: s for s in _week_preparation(self.family, self.settings, week or self.week)}
+
+    def test_an_empty_week_is_not_ready(self):
+        steps = self._steps()
+        self.assertEqual(steps[1]['state'], 'vide')
+        self.assertEqual(steps[3]['state'], 'vide')
+        self.assertEqual(steps[4]['state'], 'vide')
+
+    def test_walking_through_the_screens_changes_nothing(self):
+        for step, url in [(1, 'week'), (2, 'settings'), (3, 'menu'), (4, 'maison')]:
+            self.client.get(reverse(url), {'wizard': '1', 'step': str(step)})
+        steps = self._steps()
+        self.assertEqual(steps[3]['state'], 'vide')
+        self.assertEqual(steps[4]['state'], 'vide')
+
+    def test_menus_go_from_empty_to_partial_to_ready(self):
+        recipe = Recipe.objects.create(family=self.family, name='Gratin', category='Autre')
+        WeeklyMenuEntry.objects.create(
+            family=self.family, week_start=self.week, day='lundi', recipe=recipe
+        )
+        self.assertEqual(self._steps()[3]['state'], 'partiel')
+
+        for day in DAYS[1:]:
+            WeeklyMenuEntry.objects.create(
+                family=self.family, week_start=self.week, day=day, recipe=recipe
+            )
+        step = self._steps()[3]
+        self.assertEqual(step['state'], 'ok')
+        self.assertIn('7 repas', step['detail'])
+
+    def test_menus_of_another_week_do_not_count(self):
+        recipe = Recipe.objects.create(family=self.family, name='Gratin', category='Autre')
+        other = self.week + datetime.timedelta(days=7)
+        for day in DAYS:
+            WeeklyMenuEntry.objects.create(
+                family=self.family, week_start=other, day=day, recipe=recipe
+            )
+        self.assertEqual(self._steps()[3]['state'], 'vide')
+        self.assertEqual(self._steps(other)[3]['state'], 'ok')
+
+    def test_groceries_count_only_the_items_of_that_week(self):
+        # Un produit habituel (sans semaine) ne doit pas faire croire que la liste est faite.
+        GroceryItem.objects.create(family=self.family, name='Lait', week_start=None)
+        self.assertEqual(self._steps()[4]['state'], 'vide')
+
+        item = GroceryItem.objects.create(family=self.family, name='Riz', week_start=self.week)
+        self.assertEqual(self._steps()[4]['state'], 'partiel')
+
+        item.checked = True
+        item.save(update_fields=['checked'])
+        self.assertEqual(self._steps()[4]['state'], 'ok')
+
+    def test_items_already_at_home_do_not_block_the_step(self):
+        GroceryItem.objects.create(
+            family=self.family, name='Farine', week_start=self.week, already_home=True
+        )
+        self.assertEqual(self._steps()[4]['state'], 'ok')
+
+    def test_events_are_reported_and_conflicts_flagged(self):
+        Activity.objects.create(
+            family=self.family, person='fille', label='Piscine', day='lundi',
+            start_time=datetime.time(10, 0), end_time=datetime.time(11, 0),
+        )
+        step = self._steps()[1]
+        self.assertEqual(step['state'], 'ok')
+        self.assertIn('1 événement', step['detail'])
+
+        Activity.objects.create(
+            family=self.family, person='fille', label='Danse', day='lundi',
+            start_time=datetime.time(10, 30), end_time=datetime.time(11, 30),
+        )
+        step = self._steps()[1]
+        self.assertEqual(step['state'], 'partiel')
+        self.assertIn('conflit', step['detail'])
+
+    def test_a_one_off_event_counts_only_in_its_own_week(self):
+        Activity.objects.create(
+            family=self.family, person='fille', label='Dentiste', day='lundi',
+            specific_date=self.week + datetime.timedelta(days=1),
+        )
+        self.assertEqual(self._steps()[1]['state'], 'ok')
+        self.assertEqual(self._steps(self.week + datetime.timedelta(days=7))[1]['state'], 'vide')
+
+    def test_the_summary_page_reflects_the_real_state(self):
+        resp = self.client.get(reverse('wizard_start'))
+        self.assertContains(resp, 'À faire')
+        self.assertNotContains(resp, 'Semaine prête')
+
+        recipe = Recipe.objects.create(family=self.family, name='Gratin', category='Autre')
+        for day in DAYS:
+            WeeklyMenuEntry.objects.create(
+                family=self.family, week_start=self.week, day=day, recipe=recipe
+            )
+        resp = self.client.get(reverse('wizard_start'))
+        self.assertContains(resp, 'Les 7 repas du soir sont choisis')
+
+    def test_the_summary_follows_the_chosen_week(self):
+        recipe = Recipe.objects.create(family=self.family, name='Gratin', category='Autre')
+        other = self.week + datetime.timedelta(days=7)
+        for day in DAYS:
+            WeeklyMenuEntry.objects.create(
+                family=self.family, week_start=other, day=day, recipe=recipe
+            )
+        resp = self.client.get(reverse('wizard_start'), {'week': other.isoformat()})
+        self.assertContains(resp, 'Les 7 repas du soir sont choisis')
+        resp = self.client.get(reverse('wizard_start'))
+        self.assertContains(resp, 'Aucun repas choisi')
+
+    def test_another_family_data_never_leaks_into_the_summary(self):
+        other_family = Family.objects.create(name='Voisins', invite_code='PREPFAM2')
+        recipe = Recipe.objects.create(family=other_family, name='Soupe', category='Soupe')
+        for day in DAYS:
+            WeeklyMenuEntry.objects.create(
+                family=other_family, week_start=self.week, day=day, recipe=recipe
+            )
+        GroceryItem.objects.create(family=other_family, name='Poireau', week_start=self.week)
+        self.assertEqual(self._steps()[3]['state'], 'vide')
+        self.assertEqual(self._steps()[4]['state'], 'vide')
+
+    def test_today_card_shows_how_many_steps_are_ready(self):
+        resp = self.client.get(reverse('today'))
+        self.assertContains(resp, 'sur 4')
+        self.assertNotContains(resp, 'Tout est prêt pour cette semaine')
+
+
+class FrenchPluralTests(TestCase):
+    """`pluralize` de Django suit l'anglais, où zéro est pluriel (« 0 items »). En français
+    zéro reste au singulier : « 0 étape est prête », pas « 0 étapes sont prêtes »."""
+
+    def test_zero_and_one_stay_singular(self):
+        from planner.templatetags.fr import pluriel
+        for value in (0, 1, '0', '1'):
+            self.assertEqual(pluriel(value), '')
+            self.assertEqual(pluriel(value, 'est,sont'), 'est')
+
+    def test_two_and_more_are_plural(self):
+        from planner.templatetags.fr import pluriel
+        for value in (2, 7, '12'):
+            self.assertEqual(pluriel(value), 's')
+            self.assertEqual(pluriel(value, 'est,sont'), 'sont')
+
+    def test_rendered_summary_reads_correctly_with_zero(self):
+        family = Family.objects.create(name='Pluriel', invite_code='PLURFAM1')
+        FamilySettings.load(family)
+        parent = User.objects.create_user('plurparent', password='pass12345')
+        FamilyMembership.objects.create(user=parent, family=family, role='maman')
+        self.client.force_login(parent)
+        resp = self.client.get(reverse('wizard_start'))
+        self.assertContains(resp, '0 étape sur 4 est prête')
+
+
+class RecipeScalingTests(TestCase):
+    """Mise à l'échelle des quantités : elle n'a de sens que si la recette dit pour combien
+    de personnes elle est écrite, et elle ne doit jamais inventer une quantité là où la
+    recette n'en donne pas (« Sel », « Persil »)."""
+
+    def _recipe(self, servings=4, ingredients=None):
+        family = Family.objects.create(name=f'Ech{servings}', invite_code=f'ECH{servings:05d}')
+        return Recipe.objects.create(
+            family=family, name='Gratin', category='Autre', servings=servings,
+            ingredients=ingredients if ingredients is not None else [
+                {'name': 'Riz', 'quantity': 200, 'unit': 'g'},
+                {'name': 'Sel', 'quantity': None, 'unit': ''},
+            ],
+        )
+
+    def test_doubling_the_servings_doubles_the_quantities(self):
+        scaled = self._recipe().scaled_ingredients(8)
+        self.assertEqual(scaled[0]['quantity'], Decimal('400.00'))
+
+    def test_halving_works_too(self):
+        scaled = self._recipe().scaled_ingredients(2)
+        self.assertEqual(scaled[0]['quantity'], Decimal('100.00'))
+
+    def test_an_ingredient_without_quantity_stays_without_quantity(self):
+        scaled = self._recipe().scaled_ingredients(8)
+        self.assertIsNone(scaled[1]['quantity'])
+        self.assertEqual(scaled[1]['name'], 'Sel')
+
+    def test_non_integer_factors_are_rounded_not_left_endless(self):
+        scaled = self._recipe(servings=3).scaled_ingredients(4)
+        self.assertEqual(scaled[0]['quantity'], Decimal('266.67'))
+
+    def test_same_servings_changes_nothing(self):
+        scaled = self._recipe().scaled_ingredients(4)
+        self.assertEqual(scaled[0]['quantity'], Decimal('200.00'))
+
+    def test_a_recipe_without_servings_is_left_alone_rather_than_scaled_on_a_wrong_base(self):
+        recipe = self._recipe(servings=0)
+        self.assertEqual(recipe.scale_factor(10), Decimal('1'))
+        self.assertEqual(recipe.scaled_ingredients(10)[0]['quantity'], Decimal('200.00'))
+
+    def test_aggregate_scaled_sums_two_meals_of_the_same_recipe(self):
+        recipe = self._recipe()
+        merged = Recipe.aggregate_scaled([(recipe, 8), (recipe, 4)])
+        by_name = {m['name']: m for m in merged}
+        self.assertEqual(by_name['Riz']['quantity'], Decimal('600.00'))
+        self.assertIsNone(by_name['Sel']['quantity'])
+
+
+class MenuPortionsAndLeftoversTests(TestCase):
+    """Portions, restes et « cuisiner pour deux repas » : ce qui est réellement mis dans les
+    courses doit correspondre à ce qui sera réellement cuisiné."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Portions', invite_code='PORTFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.settings.household_servings = 4
+        self.settings.save()
+        self.parent = User.objects.create_user('portparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.week = _monday_of(_today())
+        self.recipe = Recipe.objects.create(
+            family=self.family, name='Gratin', category='Autre', servings=4,
+            ingredients=[{'name': 'Riz', 'quantity': 200, 'unit': 'g'}],
+        )
+
+    def _set_day(self, day, recipe=None):
+        return self.client.post(reverse('menu'), {
+            'set_day': day, 'recipe_id': (recipe or self.recipe).id, 'week': self.week.isoformat(),
+        })
+
+    def _ingredients(self):
+        resp = self.client.get(reverse('menu'), {'week': self.week.isoformat()})
+        return {i['name']: i for i in resp.context['all_ingredients']}
+
+    def test_a_meal_uses_the_family_default_servings(self):
+        self._set_day('lundi')
+        self.assertEqual(self._ingredients()['Riz']['quantity'], Decimal('200.00'))
+
+    def test_raising_the_servings_raises_the_shopping_quantity(self):
+        self._set_day('lundi')
+        self.client.post(reverse('menu'), {
+            'set_servings': '1', 'day': 'lundi', 'servings': '8', 'week': self.week.isoformat(),
+        })
+        self.assertEqual(self._ingredients()['Riz']['quantity'], Decimal('400.00'))
+
+    def test_servings_are_bounded(self):
+        self._set_day('lundi')
+        for bad in ('0', '51', '-3'):
+            self.client.post(reverse('menu'), {
+                'set_servings': '1', 'day': 'lundi', 'servings': bad, 'week': self.week.isoformat(),
+            })
+        entry = WeeklyMenuEntry.objects.get(family=self.family, week_start=self.week, day='lundi')
+        self.assertIsNone(entry.servings)
+
+    def test_cooking_for_two_meals_doubles_the_day_and_marks_the_other_as_leftovers(self):
+        self._set_day('lundi')
+        self.client.post(reverse('menu'), {
+            'cook_double': '1', 'day': 'lundi', 'leftovers_day': 'mardi',
+            'week': self.week.isoformat(),
+        })
+        monday = WeeklyMenuEntry.objects.get(family=self.family, week_start=self.week, day='lundi')
+        tuesday = WeeklyMenuEntry.objects.get(family=self.family, week_start=self.week, day='mardi')
+        self.assertEqual(monday.servings, 8)
+        self.assertTrue(tuesday.is_leftovers())
+        self.assertEqual(tuesday.leftovers_from, 'lundi')
+        self.assertIsNone(tuesday.recipe)
+
+    def test_leftovers_do_not_add_anything_to_the_shopping_list(self):
+        self._set_day('lundi')
+        self.client.post(reverse('menu'), {
+            'cook_double': '1', 'day': 'lundi', 'leftovers_day': 'mardi',
+            'week': self.week.isoformat(),
+        })
+        # 400 g pour le lundi doublé, et rien de plus pour le mardi en restes.
+        self.assertEqual(self._ingredients()['Riz']['quantity'], Decimal('400.00'))
+
+    def test_two_separate_meals_of_the_same_dish_are_added_up(self):
+        self._set_day('lundi')
+        self._set_day('jeudi')
+        self.assertEqual(self._ingredients()['Riz']['quantity'], Decimal('400.00'))
+
+    def test_choosing_a_dish_cancels_the_leftovers_of_that_day(self):
+        self._set_day('lundi')
+        self.client.post(reverse('menu'), {
+            'cook_double': '1', 'day': 'lundi', 'leftovers_day': 'mardi',
+            'week': self.week.isoformat(),
+        })
+        self._set_day('mardi')
+        tuesday = WeeklyMenuEntry.objects.get(family=self.family, week_start=self.week, day='mardi')
+        self.assertFalse(tuesday.is_leftovers())
+        self.assertEqual(tuesday.recipe, self.recipe)
+
+    def test_leftovers_can_be_cancelled_explicitly(self):
+        self._set_day('lundi')
+        self.client.post(reverse('menu'), {
+            'cook_double': '1', 'day': 'lundi', 'leftovers_day': 'mardi',
+            'week': self.week.isoformat(),
+        })
+        self.client.post(reverse('menu'), {
+            'clear_leftovers': '1', 'day': 'mardi', 'week': self.week.isoformat(),
+        })
+        tuesday = WeeklyMenuEntry.objects.get(family=self.family, week_start=self.week, day='mardi')
+        self.assertFalse(tuesday.is_leftovers())
+
+    def test_cooking_double_needs_a_dish_first(self):
+        self.client.post(reverse('menu'), {
+            'cook_double': '1', 'day': 'lundi', 'leftovers_day': 'mardi',
+            'week': self.week.isoformat(),
+        })
+        self.assertFalse(
+            WeeklyMenuEntry.objects.filter(family=self.family, week_start=self.week, day='mardi')
+            .exclude(leftovers_from='').exists()
+        )
+
+    def test_cooking_double_refuses_the_same_day(self):
+        self._set_day('lundi')
+        self.client.post(reverse('menu'), {
+            'cook_double': '1', 'day': 'lundi', 'leftovers_day': 'lundi',
+            'week': self.week.isoformat(),
+        })
+        monday = WeeklyMenuEntry.objects.get(family=self.family, week_start=self.week, day='lundi')
+        self.assertIsNone(monday.servings)
+
+    def test_copy_to_courses_uses_the_scaled_quantities(self):
+        self._set_day('lundi')
+        self.client.post(reverse('menu'), {
+            'set_servings': '1', 'day': 'lundi', 'servings': '8', 'week': self.week.isoformat(),
+        })
+        self.client.post(reverse('menu'), {'copy_to_courses': '1', 'week': self.week.isoformat()})
+        item = GroceryItem.objects.get(family=self.family, name='Riz')
+        self.assertEqual(item.quantity, Decimal('400.00'))
+
+    def test_a_day_of_another_family_is_never_touched(self):
+        other = Family.objects.create(name='Voisins', invite_code='PORTFAM2')
+        FamilySettings.load(other)
+        WeeklyMenuEntry.objects.create(family=other, week_start=self.week, day='lundi')
+        self._set_day('lundi')
+        self.client.post(reverse('menu'), {
+            'cook_double': '1', 'day': 'lundi', 'leftovers_day': 'mardi',
+            'week': self.week.isoformat(),
+        })
+        self.assertFalse(
+            WeeklyMenuEntry.objects.filter(family=other).exclude(leftovers_from='').exists()
+        )
+
+
+class CookModeTests(TestCase):
+    """Mode cuisine : lecture seule, quantités déjà recalculées, et rien qui puisse modifier
+    la recette ou le menu depuis cet écran."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Cuisine', invite_code='COOKFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.settings.household_servings = 6
+        self.settings.save()
+        self.parent = User.objects.create_user('cookparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.week = _monday_of(_today())
+        self.recipe = Recipe.objects.create(
+            family=self.family, name='Gratin', category='Autre', servings=4,
+            ingredients=[{'name': 'Riz', 'quantity': 200, 'unit': 'g'}],
+            steps=['Faire revenir', "Ajouter le riz", 'Enfourner'],
+        )
+
+    def test_defaults_to_the_family_servings(self):
+        resp = self.client.get(reverse('cook_mode', args=[self.recipe.pk]))
+        self.assertEqual(resp.context['servings'], 6)
+        self.assertEqual(resp.context['ingredients'][0]['quantity_display'], '300 g')
+
+    def test_follows_the_planned_meal_when_coming_from_the_menu(self):
+        WeeklyMenuEntry.objects.create(
+            family=self.family, week_start=self.week, day='lundi',
+            recipe=self.recipe, servings=10,
+        )
+        resp = self.client.get(reverse('cook_mode', args=[self.recipe.pk]), {
+            'day': 'lundi', 'week': self.week.isoformat(),
+        })
+        self.assertEqual(resp.context['servings'], 10)
+        self.assertEqual(resp.context['ingredients'][0]['quantity_display'], '500 g')
+
+    def test_portions_can_be_overridden_from_the_url(self):
+        resp = self.client.get(reverse('cook_mode', args=[self.recipe.pk]), {'portions': '2'})
+        self.assertEqual(resp.context['servings'], 2)
+        self.assertEqual(resp.context['ingredients'][0]['quantity_display'], '100 g')
+
+    def test_an_absurd_portion_count_falls_back_instead_of_being_used(self):
+        for bad in ('0', '200', 'beaucoup'):
+            resp = self.client.get(reverse('cook_mode', args=[self.recipe.pk]), {'portions': bad})
+            self.assertEqual(resp.context['servings'], 6)
+
+    def test_steps_are_listed(self):
+        resp = self.client.get(reverse('cook_mode', args=[self.recipe.pk]))
+        self.assertEqual(resp.context['steps'], ['Faire revenir', 'Ajouter le riz', 'Enfourner'])
+        self.assertContains(resp, 'Faire revenir')
+
+    def test_a_recipe_of_another_family_is_not_reachable(self):
+        other = Family.objects.create(name='Voisins', invite_code='COOKFAM2')
+        foreign = Recipe.objects.create(family=other, name='Secret', category='Autre')
+        resp = self.client.get(reverse('cook_mode', args=[foreign.pk]))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_requires_login(self):
+        self.client.logout()
+        resp = self.client.get(reverse('cook_mode', args=[self.recipe.pk]))
+        self.assertEqual(resp.status_code, 302)
+
+    def test_cook_mode_never_writes(self):
+        before = Recipe.objects.get(pk=self.recipe.pk).ingredients
+        self.client.get(reverse('cook_mode', args=[self.recipe.pk]), {'portions': '12'})
+        self.assertEqual(Recipe.objects.get(pk=self.recipe.pk).ingredients, before)
+        self.assertEqual(Recipe.objects.get(pk=self.recipe.pk).servings, 4)
+
+
+class AdvancedRecurrenceTests(TestCase):
+    """Fréquences avancées d'une tâche personnalisée. `days` dit toujours quels jours, la
+    fréquence dit quelles semaines parmi celles-là — une seule fonction porte la règle, pour
+    qu'aucun écran n'en applique une variante."""
+
+    class FakeTask:
+        def __init__(self, **kw):
+            self.days = ['samedi']
+            self.frequency = 'weekly'
+            self.anchor_week = None
+            self.monthly_nth = None
+            self.specific_date = None
+            self.__dict__.update(kw)
+
+    # Samedis de septembre 2026 : 5, 12, 19, 26 (le 26 est le dernier du mois).
+    SAMEDIS = [datetime.date(2026, 9, d) for d in (5, 12, 19, 26)]
+
+    def test_nth_weekday_of_month(self):
+        self.assertEqual([nth_weekday_of_month(d) for d in self.SAMEDIS], [1, 2, 3, 4])
+
+    def test_last_weekday_of_month(self):
+        self.assertEqual([is_last_weekday_of_month(d) for d in self.SAMEDIS],
+                         [False, False, False, True])
+
+    def test_a_five_saturday_month_has_a_fifth_that_is_the_last(self):
+        # Mai 2026 : samedis 2, 9, 16, 23, 30.
+        mai = [datetime.date(2026, 5, d) for d in (2, 9, 16, 23, 30)]
+        self.assertEqual(nth_weekday_of_month(mai[4]), 5)
+        self.assertTrue(is_last_weekday_of_month(mai[4]))
+        self.assertFalse(is_last_weekday_of_month(mai[3]))
+
+    def test_weekly_happens_every_matching_day(self):
+        task = self.FakeTask(frequency='weekly')
+        self.assertTrue(all(custom_task_occurs_on(task, d) for d in self.SAMEDIS))
+
+    def test_weekly_never_happens_on_another_weekday(self):
+        task = self.FakeTask(frequency='weekly')
+        self.assertFalse(custom_task_occurs_on(task, datetime.date(2026, 9, 7)))  # un lundi
+
+    def test_biweekly_alternates_from_its_anchor_week(self):
+        task = self.FakeTask(frequency='biweekly', anchor_week=datetime.date(2026, 9, 5))
+        self.assertEqual([custom_task_occurs_on(task, d) for d in self.SAMEDIS],
+                         [True, False, True, False])
+
+    def test_biweekly_anchored_on_the_other_week_alternates_the_other_way(self):
+        task = self.FakeTask(frequency='biweekly', anchor_week=datetime.date(2026, 9, 12))
+        self.assertEqual([custom_task_occurs_on(task, d) for d in self.SAMEDIS],
+                         [False, True, False, True])
+
+    def test_biweekly_works_backwards_from_the_anchor(self):
+        task = self.FakeTask(frequency='biweekly', anchor_week=datetime.date(2026, 9, 19))
+        self.assertTrue(custom_task_occurs_on(task, datetime.date(2026, 9, 5)))
+        self.assertFalse(custom_task_occurs_on(task, datetime.date(2026, 9, 12)))
+
+    def test_biweekly_without_an_anchor_does_not_silently_disappear(self):
+        task = self.FakeTask(frequency='biweekly', anchor_week=None)
+        self.assertTrue(all(custom_task_occurs_on(task, d) for d in self.SAMEDIS))
+
+    def test_first_saturday_of_the_month(self):
+        task = self.FakeTask(frequency='monthly', monthly_nth=1)
+        self.assertEqual([custom_task_occurs_on(task, d) for d in self.SAMEDIS],
+                         [True, False, False, False])
+
+    def test_last_saturday_of_the_month(self):
+        task = self.FakeTask(frequency='monthly', monthly_nth=-1)
+        self.assertEqual([custom_task_occurs_on(task, d) for d in self.SAMEDIS],
+                         [False, False, False, True])
+
+    def test_a_one_off_happens_on_its_date_and_nowhere_else(self):
+        task = self.FakeTask(frequency='once', specific_date=datetime.date(2026, 9, 12), days=[])
+        self.assertTrue(custom_task_occurs_on(task, datetime.date(2026, 9, 12)))
+        self.assertFalse(custom_task_occurs_on(task, datetime.date(2026, 9, 5)))
+        self.assertFalse(custom_task_occurs_on(task, datetime.date(2026, 10, 12)))
+
+    def test_without_a_date_only_the_weekly_rule_can_be_judged(self):
+        """Les appels historiques ne raisonnent qu'en jour de semaine. Une fréquence qui a
+        besoin d'une vraie date répond False plutôt que de s'afficher tous les jours."""
+        self.assertTrue(custom_task_occurs_on(self.FakeTask(frequency='weekly'), None))
+        for freq in ('biweekly', 'monthly', 'once'):
+            self.assertFalse(custom_task_occurs_on(self.FakeTask(frequency=freq), None))
+
+
+class CustomTaskFrequencyInTasksTests(TestCase):
+    """La fréquence doit produire ou non la tâche dans la vraie liste du jour, pas seulement
+    dans la fonction de règle."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Freq', invite_code='FREQFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('freqparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+
+    def _ids(self, task, date):
+        tasks = tasks_for(
+            'fille', DAYS[date.weekday()], self.settings, [], custom_tasks=[task], date=date,
+        )
+        return {t['id'] for t in tasks}
+
+    def test_a_monthly_task_appears_only_on_its_week(self):
+        task = CustomTask.objects.create(
+            family=self.family, person='fille', days=['samedi'], period='matin',
+            label='Ranger les jouets', frequency='monthly', monthly_nth=1,
+        )
+        self.assertIn(f'custom_{task.id}', self._ids(task, datetime.date(2026, 9, 5)))
+        self.assertNotIn(f'custom_{task.id}', self._ids(task, datetime.date(2026, 9, 12)))
+
+    def test_a_biweekly_task_skips_every_other_week(self):
+        task = CustomTask.objects.create(
+            family=self.family, person='fille', days=['samedi'], period='matin',
+            label='Laver la voiture', frequency='biweekly',
+            anchor_week=datetime.date(2026, 9, 5),
+        )
+        self.assertIn(f'custom_{task.id}', self._ids(task, datetime.date(2026, 9, 5)))
+        self.assertNotIn(f'custom_{task.id}', self._ids(task, datetime.date(2026, 9, 12)))
+        self.assertIn(f'custom_{task.id}', self._ids(task, datetime.date(2026, 9, 19)))
+
+    def test_a_one_off_task_appears_once(self):
+        task = CustomTask.objects.create(
+            family=self.family, person='fille', days=[], period='matin',
+            label='Rendez-vous dentiste', frequency='once',
+            specific_date=datetime.date(2026, 9, 12),
+        )
+        self.assertIn(f'custom_{task.id}', self._ids(task, datetime.date(2026, 9, 12)))
+        self.assertNotIn(f'custom_{task.id}', self._ids(task, datetime.date(2026, 9, 19)))
+
+    def test_an_existing_weekly_task_keeps_behaving_exactly_as_before(self):
+        task = CustomTask.objects.create(
+            family=self.family, person='fille', days=['samedi'], period='matin',
+            label='Arroser les plantes',
+        )
+        self.assertEqual(task.frequency, 'weekly')
+        for date in (datetime.date(2026, 9, 5), datetime.date(2026, 9, 12)):
+            self.assertIn(f'custom_{task.id}', self._ids(task, date))
+
+    def test_the_settings_form_saves_the_frequency(self):
+        self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_label': 'Grand ménage', 'task_person': 'fille',
+            'task_days': ['samedi'], 'task_period': 'matin',
+            'task_frequency': 'monthly', 'task_nth': '-1',
+        })
+        task = CustomTask.objects.get(family=self.family, label='Grand ménage')
+        self.assertEqual(task.frequency, 'monthly')
+        self.assertEqual(task.monthly_nth, -1)
+        self.assertIn('dernier', task.frequency_display())
+
+    def test_a_one_off_needs_a_date_and_says_so(self):
+        resp = self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_label': 'Ponctuelle', 'task_person': 'fille',
+            'task_days': ['samedi'], 'task_period': 'matin', 'task_frequency': 'once',
+        }, follow=True)
+        self.assertFalse(CustomTask.objects.filter(family=self.family, label='Ponctuelle').exists())
+        self.assertContains(resp, 'date')
+
+    def test_a_one_off_does_not_need_weekdays(self):
+        self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_label': 'Dentiste', 'task_person': 'fille',
+            'task_period': 'matin', 'task_frequency': 'once', 'task_date': '2026-09-12',
+        })
+        task = CustomTask.objects.get(family=self.family, label='Dentiste')
+        self.assertEqual(task.specific_date, datetime.date(2026, 9, 12))
+
+    def test_biweekly_anchor_is_snapped_to_the_monday_of_the_week(self):
+        self.client.post(reverse('settings'), {
+            'add_custom_task': '1', 'task_label': 'Poubelles', 'task_person': 'fille',
+            'task_days': ['samedi'], 'task_period': 'matin',
+            'task_frequency': 'biweekly', 'task_anchor': '2026-09-19',
+        })
+        task = CustomTask.objects.get(family=self.family, label='Poubelles')
+        self.assertEqual(task.anchor_week, datetime.date(2026, 9, 14))   # le lundi
+
+    def test_editing_a_task_can_change_its_frequency(self):
+        task = CustomTask.objects.create(
+            family=self.family, person='fille', days=['samedi'], period='matin', label='Vitres',
+        )
+        self.client.post(reverse('edit_custom_task', args=[task.pk]), {
+            'task_label': 'Vitres', 'task_person': 'fille', 'task_days': ['samedi'],
+            'task_period': 'matin', 'task_frequency': 'monthly', 'task_nth': '2',
+        })
+        task.refresh_from_db()
+        self.assertEqual(task.frequency, 'monthly')
+        self.assertEqual(task.monthly_nth, 2)
+
+
+class ChecklistTests(TestCase):
+    """Une checklist est un modèle qui produit de vraies tâches — pas un troisième système
+    de tâches vivant à part."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Check', invite_code='CHKFAM01')
+        self.settings = FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('chkparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+
+    def _checklist(self, items=None):
+        return Checklist.objects.create(
+            family=self.family, name='Sac de piscine', person='fille', period='matin',
+            items=items if items is not None else ['Maillot', 'Serviette', 'Bonnet'],
+        )
+
+    def test_created_from_the_settings_form(self):
+        self.client.post(reverse('settings'), {
+            'add_checklist': '1', 'cl_name': 'Vacances',
+            'cl_items': 'Valise\nPasseports\n\n  Chargeurs  \n',
+            'cl_person': 'fille', 'cl_period': 'soir',
+        })
+        checklist = Checklist.objects.get(family=self.family, name='Vacances')
+        self.assertEqual(checklist.items, ['Valise', 'Passeports', 'Chargeurs'])
+
+    def test_a_checklist_without_items_is_refused(self):
+        self.client.post(reverse('settings'), {
+            'add_checklist': '1', 'cl_name': 'Vide', 'cl_items': '   \n  \n',
+        })
+        self.assertFalse(Checklist.objects.filter(family=self.family).exists())
+
+    def test_a_checklist_without_a_name_is_refused(self):
+        self.client.post(reverse('settings'), {
+            'add_checklist': '1', 'cl_name': '  ', 'cl_items': 'Valise',
+        })
+        self.assertFalse(Checklist.objects.filter(family=self.family).exists())
+
+    def test_applying_creates_one_real_task_per_item(self):
+        checklist = self._checklist()
+        self.client.post(reverse('apply_checklist', args=[checklist.pk]), {
+            'apply_person': 'fille', 'apply_period': 'matin',
+            'apply_days': ['mercredi'], 'apply_frequency': 'weekly',
+        })
+        tasks = CustomTask.objects.filter(family=self.family, person='fille')
+        self.assertEqual(sorted(tasks.values_list('label', flat=True)),
+                         ['Bonnet', 'Maillot', 'Serviette'])
+        self.assertTrue(all(t.days == ['mercredi'] for t in tasks))
+
+    def test_applied_tasks_carry_the_chosen_frequency(self):
+        checklist = self._checklist(['Maillot'])
+        self.client.post(reverse('apply_checklist', args=[checklist.pk]), {
+            'apply_person': 'fille', 'apply_period': 'matin', 'apply_days': ['samedi'],
+            'apply_frequency': 'monthly', 'apply_nth': '1',
+        })
+        task = CustomTask.objects.get(family=self.family, label='Maillot')
+        self.assertEqual(task.frequency, 'monthly')
+        self.assertEqual(task.monthly_nth, 1)
+
+    def test_applying_twice_does_not_duplicate(self):
+        checklist = self._checklist()
+        for _ in range(2):
+            self.client.post(reverse('apply_checklist', args=[checklist.pk]), {
+                'apply_person': 'fille', 'apply_period': 'matin',
+                'apply_days': ['mercredi'], 'apply_frequency': 'weekly',
+            })
+        self.assertEqual(CustomTask.objects.filter(family=self.family).count(), 3)
+
+    def test_the_same_list_can_go_to_another_person(self):
+        checklist = self._checklist(['Maillot'])
+        for person in ('fille', 'fils'):
+            self.client.post(reverse('apply_checklist', args=[checklist.pk]), {
+                'apply_person': person, 'apply_period': 'matin',
+                'apply_days': ['mercredi'], 'apply_frequency': 'weekly',
+            })
+        self.assertEqual(CustomTask.objects.filter(family=self.family, label='Maillot').count(), 2)
+
+    def test_applying_needs_days_unless_it_is_a_one_off(self):
+        checklist = self._checklist(['Maillot'])
+        self.client.post(reverse('apply_checklist', args=[checklist.pk]), {
+            'apply_person': 'fille', 'apply_period': 'matin', 'apply_frequency': 'weekly',
+        })
+        self.assertFalse(CustomTask.objects.filter(family=self.family).exists())
+
+        self.client.post(reverse('apply_checklist', args=[checklist.pk]), {
+            'apply_person': 'fille', 'apply_period': 'matin',
+            'apply_frequency': 'once', 'apply_date': '2026-09-12',
+        })
+        self.assertTrue(CustomTask.objects.filter(family=self.family, label='Maillot').exists())
+
+    def test_deleting_a_checklist_keeps_the_tasks_it_created(self):
+        checklist = self._checklist(['Maillot'])
+        self.client.post(reverse('apply_checklist', args=[checklist.pk]), {
+            'apply_person': 'fille', 'apply_period': 'matin',
+            'apply_days': ['mercredi'], 'apply_frequency': 'weekly',
+        })
+        self.client.post(reverse('delete_checklist', args=[checklist.pk]))
+        self.assertFalse(Checklist.objects.filter(pk=checklist.pk).exists())
+        self.assertTrue(CustomTask.objects.filter(family=self.family, label='Maillot').exists())
+
+    def test_editing_a_checklist_does_not_rewrite_past_tasks(self):
+        checklist = self._checklist(['Maillot'])
+        self.client.post(reverse('apply_checklist', args=[checklist.pk]), {
+            'apply_person': 'fille', 'apply_period': 'matin',
+            'apply_days': ['mercredi'], 'apply_frequency': 'weekly',
+        })
+        checklist.items = ['Autre chose']
+        checklist.save(update_fields=['items'])
+        self.assertTrue(CustomTask.objects.filter(family=self.family, label='Maillot').exists())
+
+    def test_a_checklist_of_another_family_cannot_be_applied(self):
+        other = Family.objects.create(name='Voisins', invite_code='CHKFAM02')
+        foreign = Checklist.objects.create(family=other, name='Secret', items=['X'])
+        self.client.post(reverse('apply_checklist', args=[foreign.pk]), {
+            'apply_person': 'fille', 'apply_period': 'matin',
+            'apply_days': ['mercredi'], 'apply_frequency': 'weekly',
+        })
+        self.assertFalse(CustomTask.objects.filter(family=self.family).exists())
+        self.assertFalse(CustomTask.objects.filter(family=other).exists())
+
+    def test_a_kid_account_cannot_apply_or_delete(self):
+        checklist = self._checklist(['Maillot'])
+        kid = User.objects.create_user('chkkid', password='pass12345')
+        FamilyMembership.objects.create(user=kid, family=self.family, role='enfants')
+        self.client.force_login(kid)
+        self.client.post(reverse('apply_checklist', args=[checklist.pk]), {
+            'apply_person': 'fille', 'apply_period': 'matin',
+            'apply_days': ['mercredi'], 'apply_frequency': 'weekly',
+        })
+        self.client.post(reverse('delete_checklist', args=[checklist.pk]))
+        self.assertFalse(CustomTask.objects.filter(family=self.family).exists())
+        self.assertTrue(Checklist.objects.filter(pk=checklist.pk).exists())
+
+
+class DayDigestSyncTests(TestCase):
+    """Synchronisation légère : une empreinte de la journée qui change si — et seulement
+    si — ce que les écrans affichent doit changer."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Sync', invite_code='SYNCFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('syncparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.today = _today()
+        self.day = DAYS[self.today.weekday()]
+
+    def _digest(self):
+        return _day_digest(self.family, self.today)
+
+    def test_the_digest_is_stable_when_nothing_changes(self):
+        self.assertEqual(self._digest(), self._digest())
+
+    def test_checking_a_task_changes_the_digest(self):
+        before = self._digest()
+        TaskCompletion.objects.create(
+            family=self.family, person='fille', date=self.today, task_id='lit', done=True
+        )
+        self.assertNotEqual(before, self._digest())
+
+    def test_unchecking_brings_the_digest_back(self):
+        start = self._digest()
+        tc = TaskCompletion.objects.create(
+            family=self.family, person='fille', date=self.today, task_id='lit', done=True
+        )
+        self.assertNotEqual(start, self._digest())
+        tc.delete()
+        self.assertEqual(start, self._digest())
+
+    def test_a_help_request_changes_the_digest(self):
+        before = self._digest()
+        HelpRequest.objects.create(
+            family=self.family, person='fille', date=self.today, task_id='lit', active=True
+        )
+        self.assertNotEqual(before, self._digest())
+
+    def test_a_day_mode_changes_the_digest(self):
+        before = self._digest()
+        DayMode.objects.create(
+            family=self.family, person='fille', date=self.today, mode='allegee'
+        )
+        self.assertNotEqual(before, self._digest())
+
+    def test_the_evening_meal_changes_the_digest(self):
+        before = self._digest()
+        recipe = Recipe.objects.create(family=self.family, name='Gratin', category='Autre')
+        WeeklyMenuEntry.objects.create(
+            family=self.family, week_start=_monday_of(self.today), day=self.day, recipe=recipe
+        )
+        self.assertNotEqual(before, self._digest())
+
+    def test_another_day_does_not_change_todays_digest(self):
+        before = self._digest()
+        TaskCompletion.objects.create(
+            family=self.family, person='fille',
+            date=self.today - datetime.timedelta(days=3), task_id='lit', done=True,
+        )
+        self.assertEqual(before, self._digest())
+
+    def test_another_family_never_affects_our_digest(self):
+        other = Family.objects.create(name='Voisins', invite_code='SYNCFAM2')
+        before = self._digest()
+        TaskCompletion.objects.create(
+            family=other, person='fille', date=self.today, task_id='lit', done=True
+        )
+        self.assertEqual(before, self._digest())
+
+    def test_the_endpoint_returns_the_current_digest(self):
+        resp = self.client.get(reverse('day_digest'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['digest'], self._digest())
+
+    def test_the_endpoint_requires_login(self):
+        self.client.logout()
+        self.assertEqual(self.client.get(reverse('day_digest')).status_code, 302)
+
+    def test_the_today_page_carries_its_digest(self):
+        resp = self.client.get(reverse('today'))
+        self.assertEqual(resp.context['digest'], self._digest())
+        self.assertContains(resp, 'data-syncnote')
+
+    def test_the_routine_page_carries_its_digest(self):
+        resp = self.client.get(reverse('routine'))
+        self.assertEqual(resp.context['digest'], self._digest())
+
+    def test_a_bad_date_falls_back_to_today_instead_of_failing(self):
+        resp = self.client.get(reverse('day_digest'), {'date': 'pas-une-date'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['date'], self.today.isoformat())
+
+
+class TabletSyncTests(TestCase):
+    """La tablette de cuisine n'a personne devant elle : elle peut se recharger seule, mais
+    seulement quand quelque chose a bougé. L'ancien <meta refresh> rechargeait toutes les
+    cinq minutes quoi qu'il arrive — un clignotement pour rien, et jusqu'à cinq minutes de
+    retard sur un vrai changement."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Tab', invite_code='TABSYNC1')
+        self.settings = FamilySettings.load(self.family)
+        self.token = self.settings.tablet_token
+        self.today = _today()
+
+    def test_the_tablet_page_no_longer_reloads_blindly(self):
+        resp = self.client.get(reverse('tablet', args=[self.token]))
+        self.assertNotContains(resp, 'http-equiv="refresh"')
+
+    def test_the_tablet_page_carries_its_digest(self):
+        resp = self.client.get(reverse('tablet', args=[self.token]))
+        self.assertEqual(resp.context['digest'], _day_digest(self.family, self.today))
+
+    def test_the_tablet_digest_endpoint_works_without_login(self):
+        resp = self.client.get(reverse('tablet_digest', args=[self.token]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['digest'], _day_digest(self.family, self.today))
+
+    def test_the_tablet_digest_endpoint_reflects_a_change(self):
+        before = self.client.get(reverse('tablet_digest', args=[self.token])).json()['digest']
+        TaskCompletion.objects.create(
+            family=self.family, person='fille', date=self.today, task_id='lit', done=True
+        )
+        after = self.client.get(reverse('tablet_digest', args=[self.token])).json()['digest']
+        self.assertNotEqual(before, after)
+
+    def test_a_wrong_token_is_a_404_and_leaks_nothing(self):
+        resp = self.client.get(reverse('tablet_digest', args=['pas-le-bon-jeton']))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_the_tablet_digest_is_scoped_to_its_own_family(self):
+        other = Family.objects.create(name='Voisins', invite_code='TABSYNC2')
+        FamilySettings.load(other)
+        before = self.client.get(reverse('tablet_digest', args=[self.token])).json()['digest']
+        TaskCompletion.objects.create(
+            family=other, person='fille', date=self.today, task_id='lit', done=True
+        )
+        after = self.client.get(reverse('tablet_digest', args=[self.token])).json()['digest']
+        self.assertEqual(before, after)
+
+
+class MenuRowShrinkTests(TestCase):
+    """Un <select> se dimensionne sur sa plus longue option, et un élément flex refuse par
+    défaut de rétrécir sous son contenu. Sans `min-width:0`, un nom de recette un peu long
+    faisait déborder toute la page du menu sur téléphone — trouvé en balayant les huit
+    écrans à 390 px, pas en lisant le code."""
+
+    def test_the_menu_row_select_is_allowed_to_shrink(self):
+        import pathlib
+        css = (pathlib.Path(__file__).resolve().parent.parent
+               / 'static' / 'planner' / 'style.css').read_text()
+        row = [line for line in css.splitlines() if line.startswith('.menurow select{')]
+        self.assertTrue(row, "la règle .menurow select a disparu")
+        self.assertIn('min-width:0', row[0])
