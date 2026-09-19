@@ -1,13 +1,17 @@
 {% extends "planner/base.html" %}
+{% load fr %}
 {% block content %}
 {% if is_parent %}
 <div class="card wizard-entry-card">
   <div class="wizard-entry-row">
     <div>
       <h2 style="margin-bottom:2px;">Préparer notre semaine</h2>
-      <p class="hint" style="margin:0;">Parcours guidé : événements, répartition des tâches, menus, courses.</p>
+      <p class="hint" style="margin:0;">
+        {% if prep_all_ready %}Tout est prêt pour cette semaine.
+        {% else %}{{ prep_ready_count }} étape{{ prep_ready_count|pluriel }} sur 4 {{ prep_ready_count|pluriel:"est,sont" }} prête{{ prep_ready_count|pluriel }} — événements, tâches, menus, courses.{% endif %}
+      </p>
     </div>
-    <a href="{% url 'wizard_start' %}" class="wizard-entry-btn">Commencer →</a>
+    <a href="{% url 'wizard_start' %}" class="wizard-entry-btn">{% if prep_all_ready %}Voir le bilan{% else %}Continuer →{% endif %}</a>
   </div>
 </div>
 {% endif %}

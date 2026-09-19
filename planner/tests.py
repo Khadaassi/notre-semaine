@@ -26,7 +26,7 @@ from .task_logic import (
 )
 from .views import (
     _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _level_for, _monday_of,
-    _today, _due_reminders, _person_day_tasks,
+    _today, _due_reminders, _person_day_tasks, _week_preparation,
 )
 
 _ingredient_migration = importlib.import_module('planner.migrations.0016_migrate_ingredient_format')
@@ -1793,11 +1793,14 @@ class WizardEntryTests(TestCase):
         self.assertContains(resp, 'Commencer')
         self.assertContains(resp, f"{reverse('week')}?wizard=1&amp;step=1")
 
-    def test_parent_sees_recap_card_when_done(self):
+    def test_finishing_the_walkthrough_does_not_declare_the_week_ready(self):
+        """Parcourir les quatre écrans sans rien y changer ne rend pas la semaine prête :
+        l'ancien écran « Semaine prête ! » après ?done=1 disait le contraire."""
         self.client.force_login(self.parent)
         resp = self.client.get(reverse('wizard_start'), {'done': '1'})
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'Semaine prête')
+        self.assertNotContains(resp, 'Semaine prête')
+        self.assertContains(resp, 'À faire')
         self.assertContains(resp, reverse('week'))
         self.assertContains(resp, reverse('maison'))
 
@@ -1842,11 +1845,14 @@ class WizardBannerDisplayTests(TestCase):
         self.assertContains(resp, 'Étape 4/4')
         self.assertContains(resp, f"{reverse('maison')}?wizard=1&amp;step=4")
 
-    def test_maison_step_four_is_the_last_step_with_a_finish_button(self):
+    def test_maison_step_four_ends_on_the_real_state_not_on_a_declared_success(self):
+        """La dernière étape mène au bilan, qui relit l'état des données — elle ne déclare
+        pas la semaine terminée du seul fait qu'on est arrivé au bout des quatre écrans."""
         resp = self.client.get(reverse('maison'), {'wizard': '1', 'step': '4'})
         self.assertContains(resp, 'wizard-banner')
         self.assertContains(resp, 'Étape 4/4')
-        self.assertContains(resp, 'Terminer le parcours')
+        self.assertContains(resp, 'Voir le bilan')
+        self.assertNotContains(resp, 'Terminer le parcours')
         self.assertNotContains(resp, 'Étape suivante')
 
     def test_maison_has_no_banner_without_wizard_param(self):
@@ -2410,3 +2416,170 @@ class DayPickerReuseTests(TestCase):
         tpl = (pathlib.Path(__file__).resolve().parent.parent
                / 'templates' / 'planner' / '_day_picker.html').read_text()
         self.assertIn('day_field', tpl)
+
+
+class WeekPreparationStateTests(TestCase):
+    """Le bilan de « Préparer notre semaine » est calculé, pas déclaré.
+
+    Chaque étape est relue dans les données de la semaine concernée : ouvrir un écran sans
+    rien y changer ne rend rien « prêt », et une semaine préparée reste prête sans qu'on
+    rouvre le parcours. C'est tout l'écart avec l'ancien « 4 clics = semaine prête »."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Prep', invite_code='PREPFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('prepparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.week = _monday_of(_today())
+
+    def _steps(self, week=None):
+        return {s['step']: s for s in _week_preparation(self.family, self.settings, week or self.week)}
+
+    def test_an_empty_week_is_not_ready(self):
+        steps = self._steps()
+        self.assertEqual(steps[1]['state'], 'vide')
+        self.assertEqual(steps[3]['state'], 'vide')
+        self.assertEqual(steps[4]['state'], 'vide')
+
+    def test_walking_through_the_screens_changes_nothing(self):
+        for step, url in [(1, 'week'), (2, 'settings'), (3, 'menu'), (4, 'maison')]:
+            self.client.get(reverse(url), {'wizard': '1', 'step': str(step)})
+        steps = self._steps()
+        self.assertEqual(steps[3]['state'], 'vide')
+        self.assertEqual(steps[4]['state'], 'vide')
+
+    def test_menus_go_from_empty_to_partial_to_ready(self):
+        recipe = Recipe.objects.create(family=self.family, name='Gratin', category='Autre')
+        WeeklyMenuEntry.objects.create(
+            family=self.family, week_start=self.week, day='lundi', recipe=recipe
+        )
+        self.assertEqual(self._steps()[3]['state'], 'partiel')
+
+        for day in DAYS[1:]:
+            WeeklyMenuEntry.objects.create(
+                family=self.family, week_start=self.week, day=day, recipe=recipe
+            )
+        step = self._steps()[3]
+        self.assertEqual(step['state'], 'ok')
+        self.assertIn('7 repas', step['detail'])
+
+    def test_menus_of_another_week_do_not_count(self):
+        recipe = Recipe.objects.create(family=self.family, name='Gratin', category='Autre')
+        other = self.week + datetime.timedelta(days=7)
+        for day in DAYS:
+            WeeklyMenuEntry.objects.create(
+                family=self.family, week_start=other, day=day, recipe=recipe
+            )
+        self.assertEqual(self._steps()[3]['state'], 'vide')
+        self.assertEqual(self._steps(other)[3]['state'], 'ok')
+
+    def test_groceries_count_only_the_items_of_that_week(self):
+        # Un produit habituel (sans semaine) ne doit pas faire croire que la liste est faite.
+        GroceryItem.objects.create(family=self.family, name='Lait', week_start=None)
+        self.assertEqual(self._steps()[4]['state'], 'vide')
+
+        item = GroceryItem.objects.create(family=self.family, name='Riz', week_start=self.week)
+        self.assertEqual(self._steps()[4]['state'], 'partiel')
+
+        item.checked = True
+        item.save(update_fields=['checked'])
+        self.assertEqual(self._steps()[4]['state'], 'ok')
+
+    def test_items_already_at_home_do_not_block_the_step(self):
+        GroceryItem.objects.create(
+            family=self.family, name='Farine', week_start=self.week, already_home=True
+        )
+        self.assertEqual(self._steps()[4]['state'], 'ok')
+
+    def test_events_are_reported_and_conflicts_flagged(self):
+        Activity.objects.create(
+            family=self.family, person='fille', label='Piscine', day='lundi',
+            start_time=datetime.time(10, 0), end_time=datetime.time(11, 0),
+        )
+        step = self._steps()[1]
+        self.assertEqual(step['state'], 'ok')
+        self.assertIn('1 événement', step['detail'])
+
+        Activity.objects.create(
+            family=self.family, person='fille', label='Danse', day='lundi',
+            start_time=datetime.time(10, 30), end_time=datetime.time(11, 30),
+        )
+        step = self._steps()[1]
+        self.assertEqual(step['state'], 'partiel')
+        self.assertIn('conflit', step['detail'])
+
+    def test_a_one_off_event_counts_only_in_its_own_week(self):
+        Activity.objects.create(
+            family=self.family, person='fille', label='Dentiste', day='lundi',
+            specific_date=self.week + datetime.timedelta(days=1),
+        )
+        self.assertEqual(self._steps()[1]['state'], 'ok')
+        self.assertEqual(self._steps(self.week + datetime.timedelta(days=7))[1]['state'], 'vide')
+
+    def test_the_summary_page_reflects_the_real_state(self):
+        resp = self.client.get(reverse('wizard_start'))
+        self.assertContains(resp, 'À faire')
+        self.assertNotContains(resp, 'Semaine prête')
+
+        recipe = Recipe.objects.create(family=self.family, name='Gratin', category='Autre')
+        for day in DAYS:
+            WeeklyMenuEntry.objects.create(
+                family=self.family, week_start=self.week, day=day, recipe=recipe
+            )
+        resp = self.client.get(reverse('wizard_start'))
+        self.assertContains(resp, 'Les 7 repas du soir sont choisis')
+
+    def test_the_summary_follows_the_chosen_week(self):
+        recipe = Recipe.objects.create(family=self.family, name='Gratin', category='Autre')
+        other = self.week + datetime.timedelta(days=7)
+        for day in DAYS:
+            WeeklyMenuEntry.objects.create(
+                family=self.family, week_start=other, day=day, recipe=recipe
+            )
+        resp = self.client.get(reverse('wizard_start'), {'week': other.isoformat()})
+        self.assertContains(resp, 'Les 7 repas du soir sont choisis')
+        resp = self.client.get(reverse('wizard_start'))
+        self.assertContains(resp, 'Aucun repas choisi')
+
+    def test_another_family_data_never_leaks_into_the_summary(self):
+        other_family = Family.objects.create(name='Voisins', invite_code='PREPFAM2')
+        recipe = Recipe.objects.create(family=other_family, name='Soupe', category='Soupe')
+        for day in DAYS:
+            WeeklyMenuEntry.objects.create(
+                family=other_family, week_start=self.week, day=day, recipe=recipe
+            )
+        GroceryItem.objects.create(family=other_family, name='Poireau', week_start=self.week)
+        self.assertEqual(self._steps()[3]['state'], 'vide')
+        self.assertEqual(self._steps()[4]['state'], 'vide')
+
+    def test_today_card_shows_how_many_steps_are_ready(self):
+        resp = self.client.get(reverse('today'))
+        self.assertContains(resp, 'sur 4')
+        self.assertNotContains(resp, 'Tout est prêt pour cette semaine')
+
+
+class FrenchPluralTests(TestCase):
+    """`pluralize` de Django suit l'anglais, où zéro est pluriel (« 0 items »). En français
+    zéro reste au singulier : « 0 étape est prête », pas « 0 étapes sont prêtes »."""
+
+    def test_zero_and_one_stay_singular(self):
+        from planner.templatetags.fr import pluriel
+        for value in (0, 1, '0', '1'):
+            self.assertEqual(pluriel(value), '')
+            self.assertEqual(pluriel(value, 'est,sont'), 'est')
+
+    def test_two_and_more_are_plural(self):
+        from planner.templatetags.fr import pluriel
+        for value in (2, 7, '12'):
+            self.assertEqual(pluriel(value), 's')
+            self.assertEqual(pluriel(value, 'est,sont'), 'sont')
+
+    def test_rendered_summary_reads_correctly_with_zero(self):
+        family = Family.objects.create(name='Pluriel', invite_code='PLURFAM1')
+        FamilySettings.load(family)
+        parent = User.objects.create_user('plurparent', password='pass12345')
+        FamilyMembership.objects.create(user=parent, family=family, role='maman')
+        self.client.force_login(parent)
+        resp = self.client.get(reverse('wizard_start'))
+        self.assertContains(resp, '0 étape sur 4 est prête')

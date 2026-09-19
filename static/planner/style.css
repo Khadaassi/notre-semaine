@@ -681,18 +681,11 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
 .wizard-skip:hover,.wizard-exit:hover{color:var(--navy);}
 
 .wizard-card h2{margin-bottom:6px;}
-.wizard-preview{margin:10px 0 18px;padding-left:20px;font-size:14px;font-weight:700;color:var(--navy);}
-.wizard-preview li{margin-bottom:4px;}
 .wizard-start-btn{display:inline-flex;align-items:center;font-family:var(--font-display);font-weight:700;
   font-size:15px;background:var(--plum);color:#fff;border:2.5px solid var(--navy);border-radius:14px;
   padding:12px 22px;text-decoration:none;box-shadow:var(--shadow-md);transition:transform .08s ease,box-shadow .08s ease;}
 .wizard-start-btn:hover{transform:translate(-1px,-1px);box-shadow:6px 6px 0 var(--navy);}
 .wizard-start-btn:active{transform:translate(3px,3px);box-shadow:none;}
-.wizard-recap{display:flex;flex-direction:column;gap:8px;margin:14px 0;}
-.wizard-recap-item{display:flex;align-items:center;background:white;border:2px solid var(--navy);border-radius:12px;
-  padding:9px 12px;font-weight:700;font-size:13.5px;color:var(--navy);text-decoration:none;}
-.wizard-recap-item:hover{background:#fff6ea;}
-.wizard-recap-item .row-icon{margin-right:8px;}
 
 .wizard-entry-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
 .wizard-entry-btn{display:inline-flex;align-items:center;flex-shrink:0;font-family:var(--font-display);font-weight:700;
@@ -730,4 +723,32 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
   .week-desktop{display:none;}
   .week-agenda{display:block;}
   .week-nav-label h2{font-size:15px;}
+}
+
+/* ---- Bilan de préparation de la semaine (parcours guidé) ----
+   Un état par étape, relu dans les données : la pastille dit ce qui est prêt, pas ce qui a
+   été cliqué. Les trois états se distinguent par la couleur ET par le mot, jamais par la
+   couleur seule. */
+.prep-steps{display:flex;flex-direction:column;gap:9px;margin:14px 0 18px;}
+.prep-step{display:flex;align-items:center;gap:11px;text-decoration:none;background:white;
+  border:2.5px solid var(--navy);border-left-width:8px;border-radius:14px;padding:11px 13px;
+  box-shadow:var(--shadow-sm);}
+.prep-step.ok{border-left-color:var(--mint-dk);}
+.prep-step.partiel{border-left-color:var(--sun);}
+.prep-step.vide{border-left-color:var(--coral);}
+.prep-step:active{transform:translateY(2px);box-shadow:1px 1px 0 var(--navy);}
+.prep-icon{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;
+  flex:0 0 34px;border-radius:10px;background:#f1eeff;}
+.prep-icon .row-icon{width:18px;height:18px;color:var(--plum-dk);}
+.prep-body{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1;}
+.prep-label{font-family:var(--font-display);font-size:14.5px;font-weight:700;color:var(--navy);}
+.prep-detail{font-size:12px;font-weight:600;color:var(--navy-2);line-height:1.4;}
+.prep-state{flex-shrink:0;font-size:11px;font-weight:800;text-transform:uppercase;
+  letter-spacing:.03em;border-radius:999px;padding:4px 10px;border:2px solid var(--navy);}
+.prep-step.ok .prep-state{background:var(--mint);color:var(--navy);}
+.prep-step.partiel .prep-state{background:var(--sun);color:var(--navy);}
+.prep-step.vide .prep-state{background:#ffe1e6;color:var(--coral-dk);}
+@media(max-width:480px){
+  .prep-step{flex-wrap:wrap;}
+  .prep-state{margin-left:45px;}
 }

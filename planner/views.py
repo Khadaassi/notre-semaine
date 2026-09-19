@@ -194,6 +194,101 @@ def _wizard_banner(request, step, label, description, next_url=None, is_last=Fal
     }
 
 
+def _week_preparation(family, settings, week_start):
+    """État réel de préparation d'une semaine, calculé à partir des données.
+
+    Le parcours guidé ne décide pas qu'une semaine est prête parce qu'on a cliqué quatre
+    fois : chaque étape est relue dans la base pour la semaine concernée. Passer sur un
+    écran sans rien y changer laisse donc l'étape « à faire », et une semaine préparée le
+    mois dernier reste prête même si personne n'a rouvert le parcours.
+
+    Trois états seulement : 'vide' (rien), 'partiel' (commencé, incomplet), 'ok'. Une étape
+    qui n'a pas de notion de « complet » — les événements, la répartition — n'est jamais
+    'partiel' pour rien : elle signale ce qui mérite un regard (un conflit d'horaires) et
+    s'en tient là."""
+    week_end = week_start + datetime.timedelta(days=6)
+    activities = list(Activity.objects.filter(family=family))
+
+    # 1. Événements : ceux qui tombent réellement dans la semaine, règle occurs_on partagée.
+    week_dates = [week_start + datetime.timedelta(days=i) for i in range(7)]
+    events = [a for d in week_dates for a in activities_on(activities, d)]
+    conflicts = set()
+    for d in week_dates:
+        conflicts |= find_schedule_conflicts(activities_on(activities, d))
+
+    if not events:
+        events_state, events_detail = 'vide', "Aucun événement noté cette semaine."
+    elif conflicts:
+        events_state = 'partiel'
+        events_detail = (f"{len(events)} événement{'s' if len(events) > 1 else ''}, "
+                         f"dont {len(conflicts)} en conflit d'horaires.")
+    else:
+        events_state = 'ok'
+        events_detail = f"{len(events)} événement{'s' if len(events) > 1 else ''} placé{'s' if len(events) > 1 else ''}."
+
+    # 2. Répartition : exceptions et réattributions posées pour les jours de la semaine.
+    overrides = TaskException.objects.filter(
+        family=family, active=True, date__gte=week_start, date__lte=week_end
+    ).count()
+    custom = CustomTask.objects.filter(family=family).count()
+    if overrides:
+        tasks_state = 'ok'
+        tasks_detail = f"{overrides} ajustement{'s' if overrides > 1 else ''} pour cette semaine."
+    elif custom:
+        tasks_state = 'ok'
+        tasks_detail = (f"{custom} tâche{'s' if custom > 1 else ''} personnalisée"
+                        f"{'s' if custom > 1 else ''} en place, aucun ajustement cette semaine.")
+    else:
+        tasks_state = 'vide'
+        tasks_detail = "Routine de base, sans tâche personnalisée ni ajustement."
+
+    # 3. Menus : un plat par jour, sur les sept jours de la semaine choisie.
+    filled = set(
+        WeeklyMenuEntry.objects.filter(family=family, week_start=week_start, recipe__isnull=False)
+        .values_list('day', flat=True)
+    )
+    missing = [d for d in DAYS if d not in filled]
+    if not filled:
+        menu_state, menu_detail = 'vide', "Aucun repas choisi pour cette semaine."
+    elif missing:
+        menu_state = 'partiel'
+        menu_detail = f"{len(filled)} jour{'s' if len(filled) > 1 else ''} sur 7 — manque {_days_summary(missing)}."
+    else:
+        menu_state, menu_detail = 'ok', "Les 7 repas du soir sont choisis."
+
+    # 4. Courses : la liste issue de cette semaine précisément (les produits habituels,
+    # sans semaine, ne comptent pas — sinon la liste paraîtrait toujours faite).
+    week_items = list(GroceryItem.objects.filter(family=family, week_start=week_start))
+    to_buy = [g for g in week_items if not g.checked and not g.already_home]
+    if not week_items:
+        groceries_state, groceries_detail = 'vide', "Liste pas encore générée depuis les menus."
+    elif to_buy:
+        groceries_state = 'partiel'
+        groceries_detail = f"{len(to_buy)} produit{'s' if len(to_buy) > 1 else ''} encore à acheter."
+    else:
+        groceries_state = 'ok'
+        groceries_detail = f"Les {len(week_items)} produits de la semaine sont cochés ou déjà à la maison."
+
+    steps = [
+        {'step': 1, 'label': 'Événements de la semaine', 'icon': 'icon-organisation',
+         'state': events_state, 'detail': events_detail,
+         'url': f"{reverse('week')}?wizard=1&step=1&week={week_start.isoformat()}"},
+        {'step': 2, 'label': 'Répartition des tâches', 'icon': 'icon-exception',
+         'state': tasks_state, 'detail': tasks_detail,
+         'url': f"{reverse('settings')}?wizard=1&step=2"},
+        {'step': 3, 'label': 'Menus', 'icon': 'icon-menu',
+         'state': menu_state, 'detail': menu_detail,
+         'url': f"{reverse('menu')}?wizard=1&step=3&week={week_start.isoformat()}"},
+        {'step': 4, 'label': 'Courses', 'icon': 'icon-maison',
+         'state': groceries_state, 'detail': groceries_detail,
+         'url': f"{reverse('maison')}?wizard=1&step=4&week={week_start.isoformat()}"},
+    ]
+    return steps
+
+
+WEEK_STATE_LABELS = {'ok': 'Prêt', 'partiel': 'À finir', 'vide': 'À faire'}
+
+
 def _wizard_redirect(request, view_name, step=None):
     """Same as redirect(view_name), except it re-appends ?wizard=1&step=N when the request
     that triggered it was itself part of the wizard flow. Plain redirect()/reverse() drop the
@@ -351,10 +446,20 @@ def today(request):
         pc['remaining'] for c in kid_cards for pc in c['phase_cards']
     ) if is_today_view else 0
 
+    # Bilan de préparation de la semaine en cours, affiché sur la carte d'entrée du parcours.
+    # Calculé seulement pour un parent, qui est le seul à voir cette carte.
+    prep_ready = 0
+    prep_all_ready = False
+    if is_parent:
+        prep_steps = _week_preparation(family, settings, _monday_of(real_date))
+        prep_ready = sum(1 for s in prep_steps if s['state'] == 'ok')
+        prep_all_ready = prep_ready == len(prep_steps)
+
     return render(request, 'planner/today.html', {
         'kid_cards': kid_cards, 'parent_cards': parent_cards, 'day': day, 'day_chips': day_chips,
         'show_routine_entry': is_today_view and bool(kid_cards),
         'routine_remaining': routine_remaining,
+        'prep_ready_count': prep_ready, 'prep_all_ready': prep_all_ready,
         'real_date': real_date, 'settings': settings, 'is_parent': is_parent,
         'who_options': who_options, 'who': who,
         'upcoming_activity': upcoming_activity, 'tomorrow_prep': tomorrow_prep,
@@ -1715,7 +1820,17 @@ def wizard_start(request):
     parent-only "Gérer les tâches" toggle on 'Aujourd'hui'."""
     if not _is_parent(request):
         raise PermissionDenied
-    return render(request, 'planner/wizard.html', {
-        'done': request.GET.get('done') == '1',
-        'start_url': f"{reverse('week')}?wizard=1&step=1",
+    family = _get_family(request)
+    settings = FamilySettings.load(family)
+    week_start = _week_start_from_request(request)
+    steps = _week_preparation(family, settings, week_start)
+    ready = [s for s in steps if s['state'] == 'ok']
+    context = _week_context(week_start)
+    context.update({
+        'steps': steps,
+        'ready_count': len(ready),
+        'all_ready': len(ready) == len(steps),
+        'state_labels': WEEK_STATE_LABELS,
+        'start_url': f"{reverse('week')}?wizard=1&step=1&week={week_start.isoformat()}",
     })
+    return render(request, 'planner/wizard.html', context)
