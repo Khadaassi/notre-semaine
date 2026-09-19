@@ -53,7 +53,7 @@
   <div class="card">
     <h2><span class="phase-icon icon-activite"></span>Prochains événements</h2>
     {% for a in upcoming %}
-      <div class="pill">{{ a.person_name }} — {{ a.label }} — {{ a.get_day_display }}{% if a.time_range_label %} {{ a.time_range_label }}{% endif %}</div>
+      <div class="pill">{{ a.person_name }} — {{ a.label }} — {{ a.day_label }}{% if a.time_range_label %} {{ a.time_range_label }}{% endif %}</div>
     {% empty %}
       <div class="hint">Aucun événement à venir.</div>
     {% endfor %}

@@ -20,7 +20,7 @@ from .models import (
 )
 from .task_logic import (
     is_zone_b_holiday, ZONE_B_HOLIDAYS, DAYS, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for,
-    find_schedule_conflicts,
+    find_schedule_conflicts, occurs_on, activities_on, phase_for_time,
 )
 from .views import (
     _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _level_for, _monday_of,
@@ -856,6 +856,153 @@ class HomeHighlightsTests(TestCase):
         self.client.force_login(self.parent)
         resp = self.client.get(reverse('today'))
         self.assertIsNone(resp.context['tonight_recipe'])
+
+class SharedEventSelectionTests(TestCase):
+    """task_logic.occurs_on / activities_on : une seule règle de sélection, partagée par tous
+    les écrans. Un événement ponctuel n'existe qu'à sa date et ne se répète jamais."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Ev', invite_code='EVENTFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.monday = _real_date_for_day('lundi')
+        self.next_monday = self.monday + datetime.timedelta(days=7)
+
+    def _activity(self, **kw):
+        kw.setdefault('person', 'fille')
+        kw.setdefault('label', 'Natation')
+        kw.setdefault('day', 'lundi')
+        return Activity.objects.create(family=self.family, **kw)
+
+    def test_recurring_activity_happens_every_matching_weekday(self):
+        act = self._activity()
+        self.assertTrue(occurs_on(act, self.monday))
+        self.assertTrue(occurs_on(act, self.next_monday))
+        self.assertFalse(occurs_on(act, self.monday + datetime.timedelta(days=1)))
+
+    def test_one_off_happens_only_on_its_date_never_weekly(self):
+        act = self._activity(specific_date=self.monday)
+        self.assertTrue(occurs_on(act, self.monday))
+        # Même jour de la semaine, semaine suivante : ne doit PAS réapparaître.
+        self.assertFalse(occurs_on(act, self.next_monday))
+
+    def test_activities_on_mixes_recurring_and_one_off_for_that_date(self):
+        recurring = self._activity(label='Piano')
+        one_off = self._activity(label='Dentiste', specific_date=self.monday, day='jeudi')
+        today_ids = {a.id for a in activities_on(list(Activity.objects.all()), self.monday)}
+        self.assertEqual(today_ids, {recurring.id, one_off.id})
+        later_ids = {a.id for a in activities_on(list(Activity.objects.all()), self.next_monday)}
+        self.assertEqual(later_ids, {recurring.id})
+
+    def test_one_off_absent_from_generated_tasks_on_other_weeks(self):
+        act = self._activity(label='Dentiste', specific_date=self.monday, start_time=datetime.time(10, 0))
+        acts = list(Activity.objects.all())
+        ids_that_day = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, acts, date=self.monday)}
+        ids_next_week = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, acts, date=self.next_monday)}
+        self.assertIn(f'activite_{act.id}', ids_that_day)
+        self.assertNotIn(f'activite_{act.id}', ids_next_week)
+
+    def test_week_view_shows_a_one_off_only_on_its_date(self):
+        parent = User.objects.create_user('evparent', password='pass12345')
+        FamilyMembership.objects.create(user=parent, family=self.family, role='maman')
+        self.client.force_login(parent)
+        self._activity(label='Dentiste', specific_date=self.monday, day='lundi')
+        this_week = self.client.get(reverse('week'), {'week': _monday_of(self.monday).isoformat()})
+        next_week = self.client.get(reverse('week'), {'week': _monday_of(self.next_monday).isoformat()})
+        self.assertContains(this_week, 'Dentiste')
+        self.assertNotContains(next_week, 'Dentiste')
+
+
+class ActivityTaskShapeTests(TestCase):
+    """Les tâches issues d'une activité : identifiant stable (pk, pas la position) et phase
+    déduite de l'heure de début plutôt que « soir » systématique."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Sh', invite_code='SHAPEFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.monday = _real_date_for_day('lundi')
+
+    def test_task_id_follows_the_activity_pk_not_its_position(self):
+        first = Activity.objects.create(family=self.family, person='fille', label='A', day='lundi')
+        second = Activity.objects.create(family=self.family, person='fille', label='B', day='lundi')
+        acts = [first, second]
+        ids = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, acts, date=self.monday)}
+        self.assertIn(f'activite_{first.id}', ids)
+        self.assertIn(f'activite_{second.id}', ids)
+
+        # La première disparaît : l'identifiant de la seconde ne bouge pas.
+        ids_after = {t['id'] for t in tasks_for('fille', 'lundi', self.settings, [second], date=self.monday)}
+        self.assertIn(f'activite_{second.id}', ids_after)
+        self.assertNotIn(f'activite_{first.id}', ids_after)
+
+    def test_morning_activity_is_not_filed_under_the_evening_routine(self):
+        morning = Activity.objects.create(family=self.family, person='fille', label='Piscine',
+                                          day='lundi', start_time=datetime.time(9, 0))
+        evening = Activity.objects.create(family=self.family, person='fille', label='Judo',
+                                          day='lundi', start_time=datetime.time(19, 0))
+        tasks = tasks_for('fille', 'lundi', self.settings, [morning, evening], date=self.monday)
+        by_id = {t['id']: t for t in tasks}
+        self.assertEqual(by_id[f'activite_{morning.id}']['period'], 'matin')
+        self.assertEqual(by_id[f'activite_{evening.id}']['period'], 'soir')
+
+    def test_phase_for_time_cutoffs(self):
+        self.assertEqual(phase_for_time(datetime.time(8, 0)), 'matin')
+        self.assertEqual(phase_for_time(datetime.time(12, 0)), 'journee')
+        self.assertEqual(phase_for_time(datetime.time(17, 59)), 'journee')
+        self.assertEqual(phase_for_time(datetime.time(18, 0)), 'soir')
+        self.assertEqual(phase_for_time(None), 'soir')
+
+
+class TripAssignmentTests(TestCase):
+    """Les trajets vont à l'adulte réellement désigné (accompanied_by / picked_up_by), plus
+    systématiquement au père ; sans personne désignée, aucune tâche n'est inventée."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Tr', invite_code='TRIPFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.settings.papa_travaille = True
+        self.settings.save()
+        self.monday = _real_date_for_day('lundi')
+
+    def _tasks(self, person):
+        acts = list(Activity.objects.filter(family=self.family))
+        return {t['id'] for t in tasks_for(person, 'lundi', self.settings, acts, date=self.monday)}
+
+    def test_drop_off_goes_to_the_designated_parent(self):
+        act = Activity.objects.create(
+            family=self.family, person='fille', label='Natation', day='lundi',
+            start_time=datetime.time(17, 0), accompanied_by='maman',
+        )
+        self.assertIn(f'drive_{act.id}', self._tasks('maman'))
+        self.assertNotIn(f'drive_{act.id}', self._tasks('papa'))
+
+    def test_pick_up_can_be_a_different_parent_than_the_drop_off(self):
+        act = Activity.objects.create(
+            family=self.family, person='fils', label='Judo', day='lundi',
+            start_time=datetime.time(17, 0), end_time=datetime.time(18, 0),
+            accompanied_by='maman', picked_up_by='papa',
+        )
+        self.assertIn(f'drive_{act.id}', self._tasks('maman'))
+        self.assertNotIn(f'pickup_{act.id}', self._tasks('maman'))
+        self.assertIn(f'pickup_{act.id}', self._tasks('papa'))
+
+    def test_activity_without_a_designated_adult_creates_no_trip_task(self):
+        act = Activity.objects.create(
+            family=self.family, person='fille', label='Danse', day='lundi',
+            start_time=datetime.time(17, 0),
+        )
+        for person in ('maman', 'papa'):
+            self.assertNotIn(f'drive_{act.id}', self._tasks(person))
+            self.assertNotIn(f'pickup_{act.id}', self._tasks(person))
+
+    def test_no_duplicate_trip_task_for_the_same_activity(self):
+        act = Activity.objects.create(
+            family=self.family, person='fille', label='Natation', day='lundi',
+            start_time=datetime.time(17, 0), accompanied_by='papa',
+        )
+        acts = list(Activity.objects.filter(family=self.family))
+        ids = [t['id'] for t in tasks_for('papa', 'lundi', self.settings, acts, date=self.monday)]
+        self.assertEqual(ids.count(f'drive_{act.id}'), 1)
+
 
 class WeekNavigationTests(TestCase):
     """week_view defaults to the current calendar week when ?week= is absent (unchanged

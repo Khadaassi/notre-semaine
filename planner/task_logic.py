@@ -49,8 +49,46 @@ def is_zone_b_holiday(date):
     return any(start <= date <= end for _, start, end in ZONE_B_HOLIDAYS)
 
 
-def activities_for(person, day, activities):
-    return [a for a in activities if a.person == person and a.day == day]
+def occurs_on(activity, date):
+    """Single rule deciding whether an Activity happens on a given calendar date, shared by
+    every screen (Aujourd'hui, semainier, tablette, génération des tâches, bilan de semaine).
+
+    A one-off (specific_date set) happens on that date and nowhere else — in particular it
+    never also shows up on its weekly `day` slot. A recurring activity happens every week on
+    its `day`. Callers that genuinely have no date in hand pass date=None, which keeps the
+    weekly behaviour and skips one-offs entirely (they can't be placed without a date)."""
+    if date is None:
+        return not activity.specific_date
+    if activity.specific_date:
+        return activity.specific_date == date
+    return activity.day == DAYS[date.weekday()]
+
+
+def activities_on(activities, date):
+    """Every activity of the family happening on `date`, one-offs included — the list the
+    semainier, the tablette and the week-preparation bilan all read from."""
+    return [a for a in activities if occurs_on(a, date)]
+
+
+def activities_for(person, day, activities, date=None):
+    """That person's activities for a day. `date` makes the selection date-aware (one-offs
+    on their own date only); without it, only recurring activities of that weekday match."""
+    return [a for a in activities
+            if a.person == person and occurs_on(a, date) and (date is not None or a.day == day)]
+
+
+def phase_for_time(value):
+    """Maps a time of day to one of the three routine phases (see group_by_phase): before
+    12h00 = matin, 12h00–18h00 = journée, 18h00 et après = soir. Used both to slot a timed
+    activity into the right phase and to decide which phase card opens by default on
+    'Aujourd'hui' — one rule, so the two never drift apart."""
+    if value is None:
+        return 'soir'
+    if value < datetime.time(12, 0):
+        return 'matin'
+    if value < datetime.time(18, 0):
+        return 'journee'
+    return 'soir'
 
 
 def find_schedule_conflicts(day_activities):
@@ -94,21 +132,26 @@ def parse_free_time(text):
     return datetime.time(hour, minute)
 
 
-def douche_today(kid, day, activities):
-    sport = len(activities_for(kid, day, activities)) > 0
+def douche_today(kid, day, activities, date=None):
+    sport = len(activities_for(kid, day, activities, date)) > 0
     idx = DAYS.index(day)
     alternate = idx % 2 == 0  # lundi, mercredi, vendredi
     return sport or alternate
 
 
-def _own_activity_tasks(person, day, activities):
-    """A person's own scheduled activities (sport, etc.) as checkable tasks — separate
-    from _kid_activity_drive_tasks, which is papa driving a *kid* to theirs."""
+def _own_activity_tasks(person, day, activities, date=None):
+    """A person's own scheduled activities (sport, etc.) as checkable tasks — separate from
+    _kid_activity_drive_tasks, which is an adult driving a *kid* to theirs.
+
+    Task ids key on the Activity's primary key, not its position in the list: deleting or
+    reordering an activity used to shift every following id (activite0, activite1…) and
+    silently re-attach an old TaskCompletion to a different activity. The phase comes from
+    the start time, so a morning activity lands in the morning routine."""
     tasks = []
-    for i, a in enumerate(activities_for(person, day, activities)):
+    for a in activities_for(person, day, activities, date):
         time_label = a.time_range_label()
-        label = a.label + (f" ({time_label}, à confirmer)" if time_label else '')
-        tasks.append(t(f'activite{i}', label, 'soir'))
+        label = a.label + (f" ({time_label})" if time_label else '')
+        tasks.append(t(f'activite_{a.id}', label, phase_for_time(a.start_time)))
     return tasks
 
 
@@ -256,7 +299,7 @@ def build_morning(day, kid, settings, school_today=None):
     return tasks
 
 
-def build_evening_school_like(kid, day, settings, activities, holiday_tomorrow=False):
+def build_evening_school_like(kid, day, settings, activities, holiday_tomorrow=False, date=None):
     sac_demain = is_school_day(next_day(day)) and not holiday_tomorrow
     fold_day = day in ('mercredi', 'vendredi')
     basket_day = day in ('mardi', 'jeudi')
@@ -272,8 +315,8 @@ def build_evening_school_like(kid, day, settings, activities, holiday_tomorrow=F
         t('devoirs', 'Devoirs', 'soir'),
         t('coran', 'Coran — lecture & apprentissage (~1h)', 'soir'),
     ]
-    tasks += _own_activity_tasks(kid, day, activities)
-    if douche_today(kid, day, activities):
+    tasks += _own_activity_tasks(kid, day, activities, date)
+    if douche_today(kid, day, activities, date):
         tasks.append(t('douche', 'Douche', 'soir'))
     if basket_day:
         tasks.append(t('panierSDB', 'Mettre son panier à linge dans la salle de bain', 'soir'))
@@ -305,7 +348,7 @@ def _weekend_rotation_tasks(kid, settings):
     return tasks
 
 
-def tasks_for_kid(kid, day, settings, activities, holiday_today=False, holiday_tomorrow=False):
+def tasks_for_kid(kid, day, settings, activities, holiday_today=False, holiday_tomorrow=False, date=None):
     if day == 'samedi':
         tasks = [
             t('levee', 'Réveil tranquille', 'matin'),
@@ -327,7 +370,7 @@ def tasks_for_kid(kid, day, settings, activities, holiday_today=False, holiday_t
             t('coran', 'Coran — révision légère', 'journée'),
         ]
         tasks += _weekend_rotation_tasks(kid, settings)
-        tasks += _own_activity_tasks(kid, day, activities)
+        tasks += _own_activity_tasks(kid, day, activities, date)
         tasks.append(t('activite_famille', 'Activité en famille', 'après-midi', info=True))
         return tasks
 
@@ -351,7 +394,7 @@ def tasks_for_kid(kid, day, settings, activities, holiday_today=False, holiday_t
             t('coran', 'Coran — lecture', 'journée'),
         ]
         tasks += _weekend_rotation_tasks(kid, settings)
-        tasks += _own_activity_tasks(kid, day, activities)
+        tasks += _own_activity_tasks(kid, day, activities, date)
         tasks.append(t('mahlo', "Chez Mahlo (fin d'après-midi)", 'après-midi', info=True))
         tasks.append(t('repos', 'Repos / temps libre', 'journée', info=True))
         return tasks
@@ -368,10 +411,10 @@ def tasks_for_kid(kid, day, settings, activities, holiday_today=False, holiday_t
         tasks.append(t('ecran', "Temps d'écran autorisé (vacances)", 'journée', info=True))
     elif day == 'mercredi':
         tasks.append(t('pasecole', "Pas d'école — journée libre / activités", 'journée', info=True))
-    return tasks + build_evening_school_like(kid, day, settings, activities, holiday_tomorrow=holiday_tomorrow)
+    return tasks + build_evening_school_like(kid, day, settings, activities, holiday_tomorrow=holiday_tomorrow, date=date)
 
 
-def tasks_for_maman(day, settings, activities):
+def tasks_for_maman(day, settings, activities, date=None):
     is_tt = day == 'mercredi' or day == settings.tt2_day
     lunchbox_demain = is_bureau_day(next_day(day), settings)
     tasks = []
@@ -384,7 +427,8 @@ def tasks_for_maman(day, settings, activities):
             t('famille', 'Activité en famille'),
             t('sport', 'Sport', 'matin'),
         ]
-        tasks += _own_activity_tasks('maman', day, activities)
+        tasks += _kid_activity_drive_tasks('maman', day, settings, activities, date)
+        tasks += _own_activity_tasks('maman', day, activities, date)
     elif day == 'dimanche':
         tasks = [
             t('hammam', 'Hammam'),
@@ -393,7 +437,8 @@ def tasks_for_maman(day, settings, activities):
             t('sport', 'Sport', 'matin'),
             t('repos', 'Repos'),
         ]
-        tasks += _own_activity_tasks('maman', day, activities)
+        tasks += _kid_activity_drive_tasks('maman', day, settings, activities, date)
+        tasks += _own_activity_tasks('maman', day, activities, date)
     else:
         tasks.append(t('priere_m', 'Prière', 'matin'))
         tasks.append(t('sport', 'Sport (idéalement avant le réveil des enfants)', 'matin'))
@@ -412,7 +457,8 @@ def tasks_for_maman(day, settings, activities):
             tasks.append(t('courses', 'Courses de la semaine', 'journée'))
         tasks.append(t('douche_soir', 'Douche', 'soir'))
         tasks.append(t('priere_soir', 'Prière', 'soir'))
-        tasks += _own_activity_tasks('maman', day, activities)
+        tasks += _kid_activity_drive_tasks('maman', day, settings, activities, date)
+        tasks += _own_activity_tasks('maman', day, activities, date)
         tasks.append(t('repas', 'Préparer le repas du soir', 'soir'))
         tasks.append(t('gouter_pret', 'Goûter sain des enfants prêt', 'soir'))
         tasks.append(t('diner_famille', 'Dîner en famille', 'soir'))
@@ -424,48 +470,67 @@ def tasks_for_maman(day, settings, activities):
     return tasks
 
 
-def _kid_activity_drive_tasks(day, settings, activities):
-    tasks = []
+def _kid_names(settings):
     kids = [('fille', settings.fille_name)]
     if settings.nb_enfants == 2:
         kids.append(('fils', settings.fils_name))
-    for kid, name in kids:
-        for i, a in enumerate(activities_for(kid, day, activities)):
+    return kids
+
+
+def _kid_activity_drive_tasks(person, day, settings, activities, date=None):
+    """Drop-off / pick-up tasks for ONE adult: only the activities where that person is the
+    designated accompanied_by (drop-off) or picked_up_by (pick-up).
+
+    Trips used to be generated wholesale inside tasks_for_papa, so every child's activity
+    landed on the father whatever the activity said. An activity naming nobody now produces
+    no trip task at all rather than guessing — views.week_preparation surfaces those as
+    « trajets à attribuer » instead of hiding the gap behind a wrong name.
+
+    Ids key on the activity's pk (drive_/pickup_ + id), stable across deletions."""
+    tasks = []
+    for kid, name in _kid_names(settings):
+        for a in activities_for(kid, day, activities, date):
             time_label = a.time_range_label()
-            label = f"Emmener {name} à {a.label}" + (f" ({time_label}, à confirmer)" if time_label else '')
-            tasks.append(t(f'drive_{kid}{i}', label, 'soir'))
+            start = a.start_time.strftime('%Hh%M') if a.start_time else ''
+            end = a.end_time.strftime('%Hh%M') if a.end_time else ''
+            if a.accompanied_by == person:
+                label = f"Emmener {name} à {a.label}" + (f" ({start})" if start else '')
+                tasks.append(t(f'drive_{a.id}', label, phase_for_time(a.start_time)))
+            if a.picked_up_by == person:
+                label = f"Récupérer {name} — {a.label}" + (f" ({end})" if end else '')
+                tasks.append(t(f'pickup_{a.id}', label, phase_for_time(a.end_time or a.start_time)))
     return tasks
 
 
-def tasks_for_papa(day, settings, activities):
+def tasks_for_papa(day, settings, activities, date=None):
     if day == 'samedi':
         tasks = [t('famille', 'Activité en famille'), t('menage', 'Aider au ménage / rangement')]
-        return tasks + _own_activity_tasks('papa', day, activities)
+        return tasks + _kid_activity_drive_tasks('papa', day, settings, activities, date) + _own_activity_tasks('papa', day, activities, date)
     if day == 'dimanche':
         tasks = [
             t('arabe', "Emmener les enfants au cours d'arabe", 'matin'),
             t('mahlo', "Chez Mahlo (fin d'après-midi)", info=True),
             t('lessive', 'Aider à la lessive'),
         ]
-        return tasks + _own_activity_tasks('papa', day, activities)
+        return tasks + _kid_activity_drive_tasks('papa', day, settings, activities, date) + _own_activity_tasks('papa', day, activities, date)
     if day == 'mercredi':
         tasks = [t('journee', "Gérer la journée avec les enfants (pas d'école)", info=True)]
         if not settings.papa_travaille:
             tasks.append(t('dejeuner', 'Préparer le déjeuner pour les enfants', 'midi'))
-        return tasks + _kid_activity_drive_tasks(day, settings, activities) + _own_activity_tasks('papa', day, activities)
+        return tasks + _kid_activity_drive_tasks('papa', day, settings, activities, date) + _own_activity_tasks('papa', day, activities, date)
     if settings.papa_travaille:
         tasks = [t('travail', 'Travail', info=True), t('pickup', "Récupérer les enfants (16h30 — pas d'étude)", 'après-midi')]
-        return tasks + _kid_activity_drive_tasks(day, settings, activities) + _own_activity_tasks('papa', day, activities)
+        return tasks + _kid_activity_drive_tasks('papa', day, settings, activities, date) + _own_activity_tasks('papa', day, activities, date)
     tasks = [
         t('dejeuner', 'Préparer le déjeuner pour les enfants', 'midi'),
         t('pickup_midi', 'Aller chercher les enfants à 11h30', 'midi'),
         t('pickup', "Récupérer les enfants à 16h30 (pas d'étude)", 'après-midi'),
     ]
-    return tasks + _kid_activity_drive_tasks(day, settings, activities) + _own_activity_tasks('papa', day, activities)
+    return tasks + _kid_activity_drive_tasks('papa', day, settings, activities, date) + _own_activity_tasks('papa', day, activities, date)
 
 
 def tasks_for(person, day, settings, activities, holiday_today=False, holiday_tomorrow=False,
-              custom_tasks=None, day_mode='normal'):
+              custom_tasks=None, day_mode='normal', date=None):
     """Builds a person's full task list for a day. `day_mode` (see active_day_mode) is a
     per-person override: 'vacances' is folded into holiday_today (a DayMode-marked holiday
     behaves like a Zone B holiday for that person alone), while 'absence'/'allegee' drop a
@@ -475,11 +540,11 @@ def tasks_for(person, day, settings, activities, holiday_today=False, holiday_to
     if day_mode == 'vacances':
         holiday_today = True
     if person in ('fille', 'fils'):
-        tasks = tasks_for_kid(person, day, settings, activities, holiday_today, holiday_tomorrow)
+        tasks = tasks_for_kid(person, day, settings, activities, holiday_today, holiday_tomorrow, date=date)
     elif person == 'maman':
-        tasks = tasks_for_maman(day, settings, activities)
+        tasks = tasks_for_maman(day, settings, activities, date)
     elif person == 'papa':
-        tasks = tasks_for_papa(day, settings, activities)
+        tasks = tasks_for_papa(day, settings, activities, date)
     else:
         tasks = []
     if custom_tasks:

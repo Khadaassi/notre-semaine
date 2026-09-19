@@ -26,7 +26,8 @@ from .models import (
 from .task_logic import (
     DAYS, DAY_FULL, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for, next_day, pillar_for,
     is_zone_b_holiday, DEEP_CLEAN_ROOMS, group_by_phase, apply_order, parse_free_time,
-    split_by_exceptions, find_schedule_conflicts, active_day_mode,
+    split_by_exceptions, find_schedule_conflicts, active_day_mode, activities_on,
+    phase_for_time,
 )
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
 
@@ -103,17 +104,11 @@ def _real_date_for_day(day):
 
 
 def _current_phase_now(now_time):
-    """Maps a wall-clock time to one of the 3 accordion phases used on 'Aujourd'hui'
-    (see group_by_phase in task_logic.py): before 12h00 = matin, 12h00–18h00 = journée,
-    18h00 onward = soir. A simple, deliberately time-of-day-only split — it has no relation
-    to any one family member's actual school/work hours (which vary by day and person, see
-    task_logic.is_bureau_day etc.) and isn't meant to be precise, just a reasonable default
-    for which accordion panel opens automatically."""
-    if now_time < datetime.time(12, 0):
-        return 'matin'
-    if now_time < datetime.time(18, 0):
-        return 'journee'
-    return 'soir'
+    """Which accordion phase opens by default on 'Aujourd'hui'. Delegates to
+    task_logic.phase_for_time so the same cut-offs decide where a timed activity is slotted
+    — one rule, not two that can drift. Deliberately time-of-day only: it has no relation to
+    any one family member's school/work hours (see task_logic.is_bureau_day etc.)."""
+    return phase_for_time(now_time)
 
 
 def _ensure_seed_data(family):
@@ -264,8 +259,8 @@ def today(request):
     upcoming_activity = None
     if is_today_view:
         candidates = sorted(
-            (a for a in activities
-             if a.day == day and a.person in view_people and a.start_time and a.start_time >= now.time()),
+            (a for a in activities_on(activities, real_date)
+             if a.person in view_people and a.start_time and a.start_time >= now.time()),
             key=lambda a: a.start_time,
         )
         if candidates:
@@ -393,7 +388,7 @@ def _apply_task_overrides(family, person, day, real_date, settings, activities, 
     (completion/star calculation) so the two stay in lockstep."""
     if own_task_list is None:
         own_task_list = tasks_for(person, day, settings, activities, holiday_today, holiday_tomorrow,
-                                   custom_tasks, day_mode=day_mode)
+                                   custom_tasks, day_mode=day_mode, date=real_date)
     disabled_ids, not_applicable_ids = _exception_id_sets(family, person, real_date)
     outgoing, incoming = _reassignment_maps(family, real_date)
     disabled_ids = disabled_ids | outgoing.get(person, set())
@@ -401,7 +396,7 @@ def _apply_task_overrides(family, person, day, real_date, settings, activities, 
     for from_person, task_id in incoming.get(person, []):
         from_mode = active_day_mode(family, from_person, real_date)
         from_list = tasks_for(from_person, day, settings, activities, holiday_today, holiday_tomorrow,
-                               custom_tasks, day_mode=from_mode)
+                               custom_tasks, day_mode=from_mode, date=real_date)
         source = next((x for x in from_list if x['id'] == task_id), None)
         if source:
             task_list.append(dict(
@@ -640,22 +635,17 @@ def week_view(request):
         by_label = {}
         for p in people:
             day_mode = active_day_mode(family, p, real_date)
-            for x in tasks_for(p, d, settings, activities, holiday, False, day_mode=day_mode):
+            for x in tasks_for(p, d, settings, activities, holiday, False, day_mode=day_mode,
+                               date=real_date):
                 if x['id'] in MENAGE_DAILY_IDS or pillar_for(x['id'], x['period']) != 'menage':
                     continue
                 short = DEEP_CLEAN_ROOMS[d] if x['id'] == 'deepclean' else MENAGE_SHORT_LABELS.get(x['id'], x['label'])
                 by_label.setdefault(short, []).append(_person_label(p, settings))
         menage_cells.append([f"{' & '.join(names)} : {label}" for label, names in by_label.items()])
 
-        # An Activity with `specific_date` set is a one-off occurrence, shown only on the
-        # exact date it falls on (never recurring); one without it shows every week on its
-        # regular `day` — see Activity.specific_date and task_logic.find_schedule_conflicts.
-        day_activities = [
-            a for a in activities if a.person in people and (
-                (a.specific_date and a.specific_date == real_date) or
-                (not a.specific_date and a.day == d)
-            )
-        ]
+        # Même règle de sélection que partout ailleurs (task_logic.activities_on) : un
+        # événement ponctuel n'apparaît qu'à sa date, un récurrent chaque semaine.
+        day_activities = [a for a in activities_on(activities, real_date) if a.person in people]
         conflicting_ids = find_schedule_conflicts(day_activities)
         activites_cells.append([
             {
@@ -1191,12 +1181,17 @@ def tablet_view(request, token):
     ).select_related('recipe').first()
     dinner = menu_entry.recipe if menu_entry else None
 
-    day_idx = DAYS.index(day)
-    upcoming = sorted(
-        activities, key=lambda a: ((DAYS.index(a.day) - day_idx) % 7, a.start_time or datetime.time.max)
-    )[:8]
-    for a in upcoming:
-        a.person_name = _person_label(a.person, settings)
+    # Les 7 prochains jours réels, via la même règle que les autres écrans : un événement
+    # ponctuel n'est listé qu'à sa date, jamais reconduit chaque semaine (l'ancien tri par
+    # écart de jour de semaine le faisait réapparaître indéfiniment).
+    upcoming = []
+    for offset in range(7):
+        d = real_date + datetime.timedelta(days=offset)
+        for a in sorted(activities_on(activities, d), key=lambda x: x.start_time or datetime.time.max):
+            a.person_name = _person_label(a.person, settings)
+            a.day_label = "aujourd'hui" if offset == 0 else DAY_FULL[DAYS[d.weekday()]]
+            upcoming.append(a)
+    upcoming = upcoming[:8]
 
     return render(request, 'planner/tablet.html', {
         'kid_cards': [c for c in cards if c['person'] in ('fille', 'fils')],
