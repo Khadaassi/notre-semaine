@@ -14,7 +14,7 @@
     <div><div class="who">{% if settings.rotation_table == 'fille' %}{{ settings.fille_name }}{% else %}{{ settings.fils_name }}{% endif %}</div>
       <div style="font-size:12px;color:var(--muted)">Responsable de la table</div></div>
     {% if request.user.familymembership.role != 'enfants' %}
-    <form method="post" action="{% url 'toggle_rotation' %}">{% csrf_token %}<input type="hidden" name="which" value="table">
+    <form method="post" action="{% url 'toggle_rotation' %}">{% csrf_token %}<input type="hidden" name="week" value="{{ week_param }}"><input type="hidden" name="which" value="table">
       <button type="submit">Changer</button></form>
     {% endif %}
   </div>
@@ -22,7 +22,7 @@
     <div><div class="who">{% if settings.rotation_lave_vaisselle == 'fille' %}{{ settings.fille_name }}{% else %}{{ settings.fils_name }}{% endif %}</div>
       <div style="font-size:12px;color:var(--muted)">Responsable du lave-vaisselle</div></div>
     {% if request.user.familymembership.role != 'enfants' %}
-    <form method="post" action="{% url 'toggle_rotation' %}">{% csrf_token %}<input type="hidden" name="which" value="lv">
+    <form method="post" action="{% url 'toggle_rotation' %}">{% csrf_token %}<input type="hidden" name="week" value="{{ week_param }}"><input type="hidden" name="which" value="lv">
       <button type="submit">Changer</button></form>
     {% endif %}
   </div>
@@ -37,6 +37,15 @@
 <div class="card">
   <h2>Liste de courses</h2>
   <div class="hint">Jour de courses : {{ settings.get_courses_day_display }}. Les articles « déjà à la maison » restent dans la liste mais sont exclus du « à acheter ».</div>
+  <div class="week-banner">
+    Courses de la semaine du {{ week_start|date:"j F" }} au {{ week_end|date:"j F Y" }}
+    {% if is_current_week %}<span class="week-tag">semaine en cours</span>
+    {% elif is_future_week %}<span class="week-tag next">à venir</span>
+    {% else %}<span class="week-tag past">passée</span>{% endif %}
+    {% if other_week_count %}
+      <span class="hint" style="margin:0;">— {{ other_week_count }} article{{ other_week_count|pluralize }} rattaché{{ other_week_count|pluralize }} à une autre semaine, conservé{{ other_week_count|pluralize }} de côté.</span>
+    {% endif %}
+  </div>
   {% for cat, items in grouped.items %}
     <div class="courses-cat {% if cat == menu_category %}menu-week{% endif %}">
       <h3>{{ cat }}{% if cat == menu_category %}<span class="src-badge menu">Menu</span>{% endif %}</h3>
@@ -54,7 +63,7 @@
             <button type="button" class="home-toggle-btn" data-home-toggle data-id="{{ item.id }}" data-home="{% if item.already_home %}1{% else %}0{% endif %}">
               {% if item.already_home %}Retirer « déjà à la maison »{% else %}Marquer « déjà à la maison »{% endif %}
             </button>
-            <form method="post" action="{% url 'edit_grocery' %}" class="edit-grocery-form">{% csrf_token %}
+            <form method="post" action="{% url 'edit_grocery' %}" class="edit-grocery-form">{% csrf_token %}<input type="hidden" name="week" value="{{ week_param }}">
               <input type="hidden" name="item_id" value="{{ item.id }}">
               <input type="text" name="name" value="{{ item.name }}" placeholder="Nom" required>
               <input type="text" name="category" value="{{ item.category }}" placeholder="Catégorie">
@@ -62,7 +71,7 @@
               <input type="text" name="unit" value="{{ item.unit }}" placeholder="Unité">
               <button type="submit">Enregistrer</button>
             </form>
-            <form method="post" action="{% url 'delete_grocery' %}" onsubmit="return confirm('Supprimer cet article ?');">{% csrf_token %}
+            <form method="post" action="{% url 'delete_grocery' %}" onsubmit="return confirm('Supprimer cet article ?');">{% csrf_token %}<input type="hidden" name="week" value="{{ week_param }}">
               <input type="hidden" name="item_id" value="{{ item.id }}">
               <button type="submit" class="delbtn">Supprimer l'article</button>
             </form>
@@ -71,11 +80,11 @@
       {% endfor %}
     </div>
   {% endfor %}
-  <form method="post" action="{% url 'add_grocery' %}" class="addrow">{% csrf_token %}
+  <form method="post" action="{% url 'add_grocery' %}" class="addrow">{% csrf_token %}<input type="hidden" name="week" value="{{ week_param }}">
     <input type="text" name="name" placeholder="Ajouter un article…">
     <button type="submit">Ajouter</button>
   </form>
-  <form method="post" action="{% url 'reset_grocery' %}" style="margin-top:10px;">{% csrf_token %}
+  <form method="post" action="{% url 'reset_grocery' %}" style="margin-top:10px;">{% csrf_token %}<input type="hidden" name="week" value="{{ week_param }}">
     <button type="submit" class="resetbtn">Réinitialiser les cases</button>
   </form>
 </div>

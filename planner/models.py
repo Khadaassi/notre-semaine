@@ -415,12 +415,19 @@ class GroceryItem(models.Model):
     already_home = models.BooleanField(default=False)
     quantity = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
     unit = models.CharField(max_length=20, blank=True, default='')
+    # Lundi de la semaine dont ce produit vient (transfert menu → courses). NULL = produit
+    # habituel ou ajout manuel, qui n'appartient à aucune semaine et n'est donc jamais
+    # remplacé ni supprimé quand on régénère les courses d'une autre semaine.
+    week_start = models.DateField(null=True, blank=True)
 
     class Meta:
         ordering = ['category', 'name']
 
     def __str__(self):
         return self.name
+
+    def is_week_item(self):
+        return self.week_start is not None
 
     def quantity_display(self):
         text = format_quantity(self.quantity)

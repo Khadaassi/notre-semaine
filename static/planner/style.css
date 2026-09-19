@@ -410,6 +410,24 @@ textarea{width:100%;border:2.5px solid var(--navy);border-radius:14px;padding:10
   color:var(--navy);display:inline-flex;align-items:center;gap:6px;margin:0 6px 6px 0;}
 
 /* ---- Édition d'une tâche personnalisée, repliée par défaut (réglages) ---- */
+.week-jump{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px;}
+.week-jump a{font-size:12.5px;font-weight:800;color:var(--navy);text-decoration:none;background:white;
+  border:2px solid var(--navy);border-radius:999px;padding:7px 13px;box-shadow:2px 2px 0 var(--navy);}
+.week-jump a:hover{background:#fff6ea;}
+
+/* ---- Bandeau « semaine préparée » (menu, courses) ---- */
+.week-banner{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 14px;padding:9px 13px;
+  border:2.5px solid var(--navy);border-radius:14px;background:#fff6ea;font-size:12.5px;font-weight:800;
+  color:var(--navy);}
+.week-tag{background:var(--mint);color:#053b34;border-radius:999px;padding:2px 9px;font-size:10.5px;
+  text-transform:uppercase;letter-spacing:.02em;}
+.week-tag.next{background:var(--sun);color:var(--navy);}
+.week-tag.past{background:#f1eeff;color:var(--navy-2);}
+.week-switch{margin-left:auto;color:var(--plum-dk);font-weight:800;font-size:12px;text-decoration:none;
+  border:2px solid var(--navy);border-radius:999px;padding:4px 10px;background:white;}
+.week-switch + .week-switch{margin-left:0;}
+.week-switch:hover{background:#f1eeff;}
+
 /* ---- Sélecteur de jours (_day_picker.html) : 7 bascules tactiles + raccourcis ---- */
 .visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
   clip:rect(0 0 0 0);white-space:nowrap;border:0;}

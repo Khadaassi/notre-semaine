@@ -1,6 +1,7 @@
 import datetime
 import functools
 import json
+from urllib.parse import urlencode
 from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
@@ -8,7 +9,7 @@ from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import LoginView
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
+from django.db import models, transaction
 from django.http import Http404, JsonResponse
 from django.shortcuts import render, redirect
 from django.urls import reverse
@@ -596,17 +597,59 @@ MENAGE_SHORT_LABELS = {
 
 
 def _week_start_from_request(request):
-    """Resolves the Monday to display from ?week=YYYY-MM-DD (either param may be absent or
-    invalid, in which case today's week is used — this keeps week_view's default behavior
-    unchanged when no navigation has happened yet)."""
-    today_monday = _monday_of(datetime.date.today())
-    week_param = request.GET.get('week')
+    """Resolves the Monday to work on from ?week=YYYY-MM-DD (absent or invalid → this week,
+    so every screen keeps its previous default until navigation happens).
+
+    Read by every week-scoped screen — semainier, menu, courses, préparation de semaine — so
+    that choosing a week once carries across all of them instead of each one silently
+    snapping back to the current week (and editing it by accident)."""
+    week_param = request.GET.get('week') or request.POST.get('week')
     if week_param:
         try:
             return _monday_of(datetime.date.fromisoformat(week_param))
         except ValueError:
             pass
-    return today_monday
+    return _monday_of(datetime.date.today())
+
+
+def _week_context(week_start):
+    """Common display context for a chosen week: its Monday/Sunday, whether it's the current
+    one, and the ?week= value to thread through links and redirects."""
+    today_monday = _monday_of(datetime.date.today())
+    return {
+        'week_start': week_start,
+        'week_end': week_start + datetime.timedelta(days=6),
+        'week_param': week_start.isoformat(),
+        'week_prev': (week_start - datetime.timedelta(days=7)).isoformat(),
+        'week_next': (week_start + datetime.timedelta(days=7)).isoformat(),
+        'is_current_week': week_start == today_monday,
+        'is_future_week': week_start > today_monday,
+    }
+
+
+def _redirect_keeping(request, view_name, week_start=None, **extra):
+    """redirect() that preserves the context the user was working in: the chosen week, the
+    wizard step when the action came from the préparation de semaine, and whatever extra
+    param the caller names (the favourites filter, typically).
+
+    Plain redirect() drops the whole query string, which is why submitting any form on the
+    menu or the courses used to bounce you back to the current week — and, worse, made the
+    next save land on that week instead of the one you were preparing."""
+    params = {}
+    if week_start is not None:
+        params['week'] = week_start.isoformat()
+    if request.GET.get('wizard') == '1':
+        params['wizard'] = '1'
+        if request.GET.get('step'):
+            params['step'] = request.GET['step']
+    params.update({k: v for k, v in extra.items() if v})
+    url = reverse(view_name)
+    return redirect(f"{url}?{urlencode(params)}" if params else url)
+
+
+def _menu_redirect(request, week_start):
+    return _redirect_keeping(request, 'menu', week_start,
+                             favoris='1' if request.GET.get('favoris') == '1' else None)
 
 
 @login_required
@@ -733,7 +776,16 @@ def maison(request):
     family = _get_family(request)
     _ensure_seed_data(family)
     settings = FamilySettings.load(family)
-    items = GroceryItem.objects.filter(family=family)
+    week_start = _week_start_from_request(request)
+    # Les articles issus du menu sont rattachés à leur semaine : on affiche ceux de la
+    # semaine choisie, plus tous les produits sans semaine (habituels et ajouts manuels),
+    # qui restent valables quelle que soit la semaine préparée.
+    items = GroceryItem.objects.filter(family=family).filter(
+        models.Q(week_start=week_start) | models.Q(week_start__isnull=True)
+    )
+    other_week_count = GroceryItem.objects.filter(family=family, week_start__isnull=False).exclude(
+        week_start=week_start
+    ).count()
     grouped = {}
     for i in items:
         grouped.setdefault(i.category or 'Ajoutés', []).append(i)
@@ -744,7 +796,7 @@ def maison(request):
     )
     return render(request, 'planner/maison.html', {
         'settings': settings, 'grouped': grouped, 'menu_category': MENU_GROCERY_CATEGORY,
-        'wizard': wizard,
+        'wizard': wizard, 'other_week_count': other_week_count, **_week_context(week_start),
     })
 
 
@@ -766,7 +818,7 @@ def add_grocery(request):
     if name:
         GroceryItem.objects.get_or_create(family=family, name=name, defaults={'category': 'Ajoutés'})
         messages.success(request, "Article ajouté à la liste de courses.")
-    return redirect('maison')
+    return _redirect_keeping(request, 'maison', _week_start_from_request(request))
 
 
 @login_required
@@ -775,7 +827,7 @@ def reset_grocery(request):
     family = _get_family(request)
     GroceryItem.objects.filter(family=family).update(checked=False)
     messages.success(request, "Liste de courses réinitialisée.")
-    return redirect('maison')
+    return _redirect_keeping(request, 'maison', _week_start_from_request(request))
 
 
 @login_required
@@ -799,7 +851,7 @@ def edit_grocery(request):
     name = request.POST.get('name', '').strip()
     if not name:
         messages.error(request, "Le nom de l'article ne peut pas être vide.")
-        return redirect('maison')
+        return _redirect_keeping(request, 'maison', _week_start_from_request(request))
     item.name = name
     item.category = request.POST.get('category', '').strip()
     qty_raw = request.POST.get('quantity', '').strip()
@@ -808,13 +860,13 @@ def edit_grocery(request):
             item.quantity = Decimal(qty_raw.replace(',', '.'))
         except InvalidOperation:
             messages.error(request, "Quantité invalide.")
-            return redirect('maison')
+            return _redirect_keeping(request, 'maison', _week_start_from_request(request))
     else:
         item.quantity = None
     item.unit = request.POST.get('unit', '').strip()
     item.save()
     messages.success(request, "Article modifié.")
-    return redirect('maison')
+    return _redirect_keeping(request, 'maison', _week_start_from_request(request))
 
 
 @login_required
@@ -825,7 +877,7 @@ def delete_grocery(request):
     family = _get_family(request)
     GroceryItem.objects.filter(pk=request.POST.get('item_id'), family=family).delete()
     messages.success(request, "Article supprimé.")
-    return redirect('maison')
+    return _redirect_keeping(request, 'maison', _week_start_from_request(request))
 
 
 @login_required
@@ -840,14 +892,14 @@ def toggle_rotation(request):
     else:
         settings.rotation_lave_vaisselle = 'fils' if settings.rotation_lave_vaisselle == 'fille' else 'fille'
     settings.save()
-    return redirect('maison')
+    return _redirect_keeping(request, 'maison', _week_start_from_request(request))
 
 
 @login_required
 def menu(request):
     family = _get_family(request)
     _ensure_seed_data(family)
-    week_start = _monday_of(datetime.date.today())
+    week_start = _week_start_from_request(request)
     # Unfiltered — used for the per-day recipe dropdown, which must always offer every
     # recipe regardless of the "favoris" display filter below.
     recipes = Recipe.objects.filter(family=family).order_by('-is_favorite', 'category', 'name')
@@ -877,22 +929,22 @@ def menu(request):
                 recipe.family = family
                 recipe.save()
                 messages.success(request, "Recette enregistrée.")
-                return _wizard_redirect(request, 'menu')
+                return _menu_redirect(request, week_start)
             recipe_form = form
         elif 'delete_recipe' in request.POST:
             Recipe.objects.filter(id=request.POST['delete_recipe'], family=family).delete()
             messages.success(request, "Recette supprimée.")
-            return _wizard_redirect(request, 'menu')
+            return _menu_redirect(request, week_start)
         elif 'set_day' in request.POST:
             day = request.POST['set_day']
             recipe_id = request.POST.get('recipe_id') or None
             if recipe_id and not Recipe.objects.filter(id=recipe_id, family=family).exists():
                 messages.error(request, "Recette invalide.")
-                return _wizard_redirect(request, 'menu')
+                return _menu_redirect(request, week_start)
             WeeklyMenuEntry.objects.update_or_create(
                 family=family, week_start=week_start, day=day, defaults={'recipe_id': recipe_id}
             )
-            return _wizard_redirect(request, 'menu')
+            return _menu_redirect(request, week_start)
         elif 'copy_to_courses' in request.POST:
             # Explicit conflict handling (Lot 4, point 5): copy_to_courses used to be a
             # silent get_or_create — an item already checked "acheté" that becomes needed
@@ -905,7 +957,12 @@ def menu(request):
             # weekly menu rather than trusted from the first request.
             resolution = request.POST.get('resolve_returning')
             names = [ing['name'] for ing in all_ingredients]
-            existing_by_name = {i.name: i for i in GroceryItem.objects.filter(family=family, name__in=names)}
+            # On ne réutilise que les articles de cette semaine ou les produits habituels
+            # (week_start NULL) : la liste d'une autre semaine n'est jamais écrasée.
+            existing_by_name = {
+                i.name: i for i in GroceryItem.objects.filter(family=family, name__in=names)
+                .filter(models.Q(week_start=week_start) | models.Q(week_start__isnull=True))
+            }
             returning_checked = [
                 existing_by_name[n] for n in names
                 if existing_by_name.get(n) is not None and existing_by_name[n].checked
@@ -918,41 +975,45 @@ def menu(request):
                     if item is None:
                         GroceryItem.objects.create(
                             family=family, name=ing['name'], category=MENU_GROCERY_CATEGORY,
-                            quantity=ing['quantity'], unit=ing['unit'],
+                            quantity=ing['quantity'], unit=ing['unit'], week_start=week_start,
                         )
                     else:
                         item.quantity = ing['quantity']
                         item.unit = ing['unit']
+                        # Un ajout manuel (week_start NULL) réclamé par le menu devient un
+                        # article de la semaine ; il n'est jamais supprimé pour autant.
+                        item.week_start = week_start
                         if resolution == 'uncheck' and item.checked:
                             item.checked = False
-                        item.save(update_fields=['quantity', 'unit', 'checked'])
+                        item.save(update_fields=['quantity', 'unit', 'checked', 'week_start'])
                 messages.success(request, "Ingrédients ajoutés à la liste de courses.")
                 # Step 4 of the "Préparer notre semaine" wizard (see wizard_start): this POST
                 # *is* step 4's action, so on success it hands off straight to 'maison' (the
                 # screen that lists what was just copied) instead of looping back to 'menu' —
                 # outside the wizard, behavior is unchanged (back to 'menu').
                 if request.GET.get('wizard') == '1' and request.GET.get('step') == '4':
-                    return redirect(f"{reverse('maison')}?wizard=1&step=4")
-                return redirect('menu')
+                    return _redirect_keeping(request, 'maison', week_start)
+                return _menu_redirect(request, week_start)
 
     wizard_step = 4 if request.GET.get('step') == '4' else 3
     if wizard_step == 4:
         wizard = _wizard_banner(
             request, 4, 'Courses',
             "Ajoutez les ingrédients du menu à la liste de courses avec le bouton ci-dessous.",
-            next_url=f"{reverse('maison')}?wizard=1&step=4",
+            next_url=f"{reverse('maison')}?wizard=1&step=4&week={week_start.isoformat()}",
         )
     else:
         wizard = _wizard_banner(
             request, 3, 'Menus',
             "Choisissez une recette pour chaque jour de la semaine.",
-            next_url=f"{reverse('menu')}?wizard=1&step=4",
+            next_url=f"{reverse('menu')}?wizard=1&step=4&week={week_start.isoformat()}",
         )
 
     return render(request, 'planner/menu.html', {
         'by_cat': by_cat, 'day_rows': day_rows, 'recipes': recipes,
         'all_ingredients': all_ingredients, 'recipe_form': recipe_form,
         'favoris_only': favoris_only, 'pending_conflicts': pending_conflicts, 'wizard': wizard,
+        **_week_context(week_start),
     })
 
 

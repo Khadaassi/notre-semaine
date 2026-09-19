@@ -1004,6 +1004,90 @@ class TripAssignmentTests(TestCase):
         self.assertEqual(ids.count(f'drive_{act.id}'), 1)
 
 
+class WeekContextPropagationTests(TestCase):
+    """La semaine choisie sur le semainier doit suivre sur les menus, les courses et la
+    préparation de semaine — et surtout ne jamais faire écrire dans la semaine courante par
+    accident après une soumission de formulaire."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Wk', invite_code='WEEKCTXFAM1')
+        FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('wkparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.this_monday = _monday_of(datetime.date.today())
+        self.next_monday = self.this_monday + datetime.timedelta(days=7)
+        self.recipe = Recipe.objects.create(family=self.family, name='Soupe', category='Soupe',
+                                            ingredients=[{'name': 'Carotte', 'quantity': 200, 'unit': 'g'}])
+
+    def test_menu_reads_the_requested_week(self):
+        WeeklyMenuEntry.objects.create(family=self.family, week_start=self.next_monday,
+                                       day='lundi', recipe=self.recipe)
+        resp = self.client.get(reverse('menu'), {'week': self.next_monday.isoformat()})
+        self.assertEqual(resp.context['week_start'], self.next_monday)
+        self.assertFalse(resp.context['is_current_week'])
+        selected = {r['day']: r['selected'] for r in resp.context['day_rows']}
+        self.assertEqual(selected['lundi'], self.recipe.id)
+
+    def test_setting_a_meal_writes_to_the_chosen_week_not_the_current_one(self):
+        resp = self.client.post(
+            f"{reverse('menu')}?week={self.next_monday.isoformat()}",
+            {'set_day': 'mardi', 'recipe_id': self.recipe.id, 'week': self.next_monday.isoformat()},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(WeeklyMenuEntry.objects.filter(
+            family=self.family, week_start=self.next_monday, day='mardi', recipe=self.recipe).exists())
+        self.assertFalse(WeeklyMenuEntry.objects.filter(
+            family=self.family, week_start=self.this_monday, day='mardi').exists())
+
+    def test_redirect_after_submission_keeps_the_week(self):
+        resp = self.client.post(
+            f"{reverse('menu')}?week={self.next_monday.isoformat()}",
+            {'set_day': 'mardi', 'recipe_id': self.recipe.id, 'week': self.next_monday.isoformat()},
+        )
+        self.assertIn(f'week={self.next_monday.isoformat()}', resp['Location'])
+
+    def test_copy_to_courses_tags_items_with_the_prepared_week(self):
+        WeeklyMenuEntry.objects.create(family=self.family, week_start=self.next_monday,
+                                       day='lundi', recipe=self.recipe)
+        self.client.post(
+            f"{reverse('menu')}?week={self.next_monday.isoformat()}",
+            {'copy_to_courses': '1', 'week': self.next_monday.isoformat()},
+        )
+        item = GroceryItem.objects.get(family=self.family, name='Carotte')
+        self.assertEqual(item.week_start, self.next_monday)
+
+    def test_courses_of_another_week_are_not_shown_nor_overwritten(self):
+        other = GroceryItem.objects.create(family=self.family, name='Poireau',
+                                           week_start=self.this_monday, category='Menu de la semaine')
+        manual = GroceryItem.objects.create(family=self.family, name='Éponges', category='Ajoutés')
+        resp = self.client.get(reverse('maison'), {'week': self.next_monday.isoformat()})
+        shown = {i.name for items in resp.context['grouped'].values() for i in items}
+        self.assertNotIn('Poireau', shown)        # article d'une autre semaine : mis de côté
+        self.assertIn('Éponges', shown)           # ajout manuel : valable quelle que soit la semaine
+        self.assertEqual(resp.context['other_week_count'], 1)
+        other.refresh_from_db()
+        self.assertEqual(other.week_start, self.this_monday)   # jamais réécrit
+
+    def test_adding_an_item_from_a_prepared_week_keeps_that_week_in_the_redirect(self):
+        resp = self.client.post(reverse('add_grocery'),
+                                {'name': 'Levure', 'week': self.next_monday.isoformat()})
+        self.assertIn(f'week={self.next_monday.isoformat()}', resp['Location'])
+        # Un ajout manuel n'appartient à aucune semaine : il reste visible partout.
+        self.assertIsNone(GroceryItem.objects.get(family=self.family, name='Levure').week_start)
+
+    def test_invalid_week_param_falls_back_to_the_current_week(self):
+        resp = self.client.get(reverse('menu'), {'week': 'pas-une-date'})
+        self.assertEqual(resp.context['week_start'], self.this_monday)
+        self.assertTrue(resp.context['is_current_week'])
+
+    def test_semainier_links_to_the_same_week_on_menu_and_courses(self):
+        resp = self.client.get(reverse('week'), {'week': self.next_monday.isoformat()})
+        html = resp.content.decode()
+        self.assertIn(f"{reverse('menu')}?week={self.next_monday.isoformat()}", html)
+        self.assertIn(f"{reverse('maison')}?week={self.next_monday.isoformat()}", html)
+
+
 class WeekNavigationTests(TestCase):
     """week_view defaults to the current calendar week when ?week= is absent (unchanged
     behavior), and navigates to whichever Monday ?week= points at otherwise — snapping any
@@ -1789,12 +1873,20 @@ class WizardCopyToCoursesHandoffTests(TestCase):
         resp = self.client.post(
             f"{reverse('menu')}?wizard=1&step=4", {'copy_to_courses': '1'}
         )
-        self.assertRedirects(resp, f"{reverse('maison')}?wizard=1&step=4")
+        # La redirection porte aussi la semaine préparée (WeekContextPropagationTests) : on
+        # vérifie donc la destination et les paramètres qui comptent, pas la chaîne exacte.
+        path, _, query = resp['Location'].partition('?')
+        self.assertEqual(path, reverse('maison'))
+        self.assertIn('wizard=1', query)
+        self.assertIn('step=4', query)
         self.assertTrue(GroceryItem.objects.filter(family=self.family, name='Pâtes').exists())
 
     def test_copy_to_courses_outside_wizard_still_redirects_to_menu(self):
         resp = self.client.post(reverse('menu'), {'copy_to_courses': '1'})
-        self.assertRedirects(resp, reverse('menu'))
+        path, _, query = resp['Location'].partition('?')
+        self.assertEqual(path, reverse('menu'))
+        self.assertNotIn('wizard', query)
+        self.assertNotIn('step', query)
 
 
 class WizardStepPreservedAcrossSamePageActionsTests(TestCase):
@@ -1814,13 +1906,19 @@ class WizardStepPreservedAcrossSamePageActionsTests(TestCase):
         resp = self.client.post(f"{reverse('menu')}?wizard=1&step=3", {
             'set_day': '1', 'day': 'lundi', 'recipe_id': self.recipe.id,
         })
-        self.assertRedirects(resp, f"{reverse('menu')}?wizard=1&step=3")
+        path, _, query = resp['Location'].partition('?')
+        self.assertEqual(path, reverse('menu'))
+        self.assertIn('wizard=1', query)
+        self.assertIn('step=3', query)
 
     def test_set_day_outside_wizard_redirects_without_wizard_params(self):
         resp = self.client.post(reverse('menu'), {
             'set_day': '1', 'day': 'lundi', 'recipe_id': self.recipe.id,
         })
-        self.assertRedirects(resp, reverse('menu'))
+        path, _, query = resp['Location'].partition('?')
+        self.assertEqual(path, reverse('menu'))
+        self.assertNotIn('wizard', query)
+        self.assertNotIn('step', query)
 
     def test_settings_save_inside_wizard_redirects_back_with_step_kept(self):
         resp = self.client.post(f"{reverse('settings')}?wizard=1&step=2", {
