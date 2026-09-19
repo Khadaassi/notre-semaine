@@ -8,6 +8,7 @@ urlpatterns = [
     path('reorder-tasks/', views.reorder_tasks, name='reorder_tasks'),
     path('routine/', views.routine_view, name='routine'),
     path('routine/aide/', views.toggle_help, name='toggle_help'),
+    path('sync/', views.day_digest_json, name='day_digest'),
     path('rappels/', views.reminders_json, name='reminders_json'),
     path('rappels/plus-tard/', views.snooze_reminder, name='snooze_reminder'),
     path('etoiles/', views.stars_view, name='stars'),
@@ -41,4 +42,5 @@ urlpatterns = [
     path('preparer/', views.wizard_start, name='wizard_start'),
     path('inscription/', views.signup, name='signup'),
     path('tablette/<str:token>/', views.tablet_view, name='tablet'),
+    path('tablette/<str:token>/sync/', views.tablet_digest_json, name='tablet_digest'),
 ]

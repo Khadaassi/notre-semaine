@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import functools
 import json
 from urllib.parse import urlencode
@@ -497,6 +498,7 @@ def today(request):
         'show_routine_entry': is_today_view and bool(kid_cards),
         'routine_remaining': routine_remaining,
         'prep_ready_count': prep_ready, 'prep_all_ready': prep_all_ready,
+        'digest': _day_digest(family, real_date), 'digest_date': real_date.isoformat(),
         'real_date': real_date, 'settings': settings, 'is_parent': is_parent,
         'who_options': who_options, 'who': who,
         'upcoming_activity': upcoming_activity, 'tomorrow_prep': tomorrow_prep,
@@ -779,6 +781,7 @@ def routine_view(request):
 
     return render(request, 'planner/routine.html', {
         'spaces': spaces, 'day': day, 'real_date': real_date,
+        'digest': _day_digest(family, real_date), 'digest_date': real_date.isoformat(),
     })
 
 
@@ -875,6 +878,76 @@ def _due_reminders(family, settings, now=None):
             'remaining': state['remaining'],
         })
     return due
+
+
+def _day_digest(family, date):
+    """Empreinte courte de l'état affiché d'une journée, pour la synchronisation légère.
+
+    Elle est calculée à partir de ce que les écrans montrent réellement — cases cochées,
+    minuteurs, demandes d'aide, mode du jour, repas du soir. Elle change donc si et
+    seulement si l'affichage doit changer : pas de rechargement pour rien, et aucun
+    changement manqué.
+
+    Un hachage plutôt qu'un horodatage : il ne dépend d'aucune horloge, ne réclame pas de
+    colonne supplémentaire sur des tables existantes, et ne peut pas se désynchroniser
+    d'un écran qui afficherait autre chose que ce qui a été daté."""
+    parts = list(
+        TaskCompletion.objects.filter(family=family, date=date)
+        .order_by('person', 'task_id')
+        .values_list('person', 'task_id', 'done', 'seconds_spent', 'timer_started_at')
+    )
+    parts += list(
+        HelpRequest.objects.filter(family=family, date=date, active=True)
+        .order_by('person', 'task_id').values_list('person', 'task_id')
+    )
+    parts += list(
+        DayMode.objects.filter(family=family, date=date)
+        .order_by('person').values_list('person', 'mode')
+    )
+    parts += list(
+        WeeklyMenuEntry.objects.filter(family=family, week_start=_monday_of(date))
+        .order_by('day').values_list('day', 'recipe_id', 'servings', 'leftovers_from')
+    )
+    return hashlib.sha1(repr(parts).encode()).hexdigest()[:16]
+
+
+@login_required
+def day_digest_json(request):
+    """Interrogé par les écrans ouverts pour savoir si la journée a bougé ailleurs.
+
+    Réponse volontairement minuscule : une empreinte, rien d'autre. C'est à la page de
+    décider quoi en faire — la tablette se recharge seule, un écran où quelqu'un est en
+    train de cocher propose de le faire."""
+    family = _get_family(request)
+    date = _today()
+    raw = request.GET.get('date')
+    if raw:
+        try:
+            date = datetime.date.fromisoformat(raw)
+        except ValueError:
+            pass
+    return JsonResponse({'digest': _day_digest(family, date), 'date': date.isoformat()})
+
+
+@ratelimit(key='ip', rate='120/m', method='GET', block=True)
+def tablet_digest_json(request, token):
+    """Même empreinte, pour la tablette de cuisine, qui n'est pas connectée.
+
+    Le jeton long et non devinable de l'URL est la seule clé, exactement comme pour
+    l'affichage lui-même, et cette réponse ne divulgue rien de plus qu'un hachage."""
+    settings = FamilySettings.objects.select_related('family').filter(
+        tablet_token=token
+    ).first() if token else None
+    if not settings:
+        raise Http404("Lien tablette invalide.")
+    date = _today()
+    raw = request.GET.get('date')
+    if raw:
+        try:
+            date = datetime.date.fromisoformat(raw)
+        except ValueError:
+            pass
+    return JsonResponse({'digest': _day_digest(settings.family, date)})
 
 
 @login_required
@@ -1936,7 +2009,10 @@ def tablet_view(request, token):
             upcoming.append(a)
     upcoming = upcoming[:8]
 
+    digest = _day_digest(family, real_date)
     return render(request, 'planner/tablet.html', {
+        'digest': digest, 'digest_url': reverse('tablet_digest', args=[token]),
+        'digest_date': real_date.isoformat(),
         'kid_cards': [c for c in cards if c['person'] in ('fille', 'fils')],
         'parent_cards': [c for c in cards if c['person'] in ('maman', 'papa')],
         'day': day, 'day_chips': day_chips, 'real_date': real_date, 'settings': settings,

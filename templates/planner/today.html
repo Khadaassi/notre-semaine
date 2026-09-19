@@ -15,6 +15,7 @@
   </div>
 </div>
 {% endif %}
+{% include "planner/_sync_note.html" %}
 <div class="today-toolbar">
   <div class="hint" style="margin:0;">{{ real_date|date:"l j F Y"|capfirst }}</div>
   <div class="toolbar-btns">
@@ -229,6 +230,8 @@ document.querySelectorAll('.task-toggle').forEach(cb=>{
         return r.json();
       })
       .then(data=>{
+        // Notre propre écriture : on réaligne l'empreinte pour ne pas se signaler à soi-même.
+        if (window.nsSyncAck) window.nsSyncAck();
         if (wasChecked && (person === 'fille' || person === 'fils') &&
             pct === 100 && !celebratedPhase[phaseKey]) {
           celebratedPhase[phaseKey] = true;

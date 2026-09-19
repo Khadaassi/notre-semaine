@@ -147,6 +147,7 @@ nav.tabs a .nav-icon{margin-right:6px;}
 .icon-activite{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23000' stroke='none'%3E%3Cpath d='M13 2L3 14h7l-1 8 11-14h-8z'/%3E%3C/svg%3E");}
 .icon-clock{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3.5 2'/%3E%3C/svg%3E");}
 .icon-etoile{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23000' stroke='none'%3E%3Cpath d='M12 2.5l2.9 6 6.6.7-4.9 4.6 1.3 6.5L12 16.9 6.1 20.3l1.3-6.5-4.9-4.6 6.6-.7z'/%3E%3C/svg%3E");}
+.icon-sync{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 11a8 8 0 0 0-14-4.5L3.5 9'/%3E%3Cpath d='M4 13a8 8 0 0 0 14 4.5L20.5 15'/%3E%3Cpath d='M3.5 5v4H7.5'/%3E%3Cpath d='M20.5 19v-4h-4'/%3E%3C/svg%3E");}
 .icon-restes{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 9h16l-1.2 10.2a2 2 0 0 1-2 1.8H7.2a2 2 0 0 1-2-1.8z'/%3E%3Cpath d='M8.5 9V6.5a3.5 3.5 0 0 1 7 0V9'/%3E%3C/svg%3E");}
 .icon-cuisine{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 13h16'/%3E%3Cpath d='M5 13a7 7 0 0 1 14 0'/%3E%3Cpath d='M3 16.5h18'/%3E%3Cpath d='M6 20h12'/%3E%3C/svg%3E");}
 .icon-cloche{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8'/%3E%3Cpath d='M13.7 21a2 2 0 0 1-3.4 0'/%3E%3C/svg%3E");}
@@ -818,3 +819,14 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
   .freqpicker label{flex:1 1 130px;}
   .freqpicker select,.freqpicker input[type=date]{width:100%;}
 }
+
+/* ---- Signalement de synchronisation (voir _sync_note.html) ----
+   Un bandeau discret, jamais un rechargement imposé : quelqu'un est peut-être en train de
+   cocher, et lui reprendre sa page serait pire que l'écart qu'on corrige. */
+.syncnote{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:0 0 12px;
+  background:#eef0ff;border:2px solid var(--plum);border-radius:12px;padding:9px 12px;
+  font-size:12.5px;font-weight:700;color:var(--navy);}
+.syncnote .row-icon{width:17px;height:17px;color:var(--plum-dk);flex:0 0 17px;}
+.syncnote button{margin-left:auto;font-size:12px;font-weight:800;padding:6px 12px;min-height:0;
+  border-radius:999px;background:var(--plum);}
+@media(max-width:420px){ .syncnote button{margin-left:0;width:100%;} }

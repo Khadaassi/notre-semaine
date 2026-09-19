@@ -8,6 +8,8 @@
   <a class="routine-back" href="{% url 'today' %}">Voir la checklist</a>
 </div>
 
+{% include "planner/_sync_note.html" %}
+
 <div class="routine-grid">
   {% for space in spaces %}
   <section class="routine-space {{ space.person }} {% if space.finished %}finished{% endif %}"
@@ -145,6 +147,7 @@ document.querySelectorAll('[data-space]').forEach(space => {
         li.classList.add('done');
         helpState.hidden = true;                   // l'aide reçue tombe avec la tâche
         helpBtn.setAttribute('aria-pressed', 'false');
+        if (window.nsSyncAck) window.nsSyncAck();   // notre propre écriture, pas celle d'un autre
         if (data && data.milestone_reached) {
           const msg = space.querySelector('[data-finished-msg]');
           if (msg) msg.textContent = data.reward_text ||
@@ -161,7 +164,8 @@ document.querySelectorAll('[data-space]').forEach(space => {
     if (!li) return;
     btn.disabled = true;
     post("{% url 'toggle_task' %}", {person, task_id: li.dataset.item, day: DAY, done: '0'})
-      .then(() => { li.classList.remove('done'); render(); })
+      .then(() => { li.classList.remove('done'); render();
+                    if (window.nsSyncAck) window.nsSyncAck(); })
       .catch(() => notify(space, "Impossible d'annuler."))
       .finally(() => { btn.disabled = false; });
   }));

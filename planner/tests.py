@@ -27,7 +27,7 @@ from .task_logic import (
 )
 from .views import (
     _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _level_for, _monday_of,
-    _today, _due_reminders, _person_day_tasks, _week_preparation,
+    _today, _due_reminders, _person_day_tasks, _week_preparation, _day_digest,
 )
 
 _ingredient_migration = importlib.import_module('planner.migrations.0016_migrate_ingredient_format')
@@ -3158,3 +3158,148 @@ class ChecklistTests(TestCase):
         self.client.post(reverse('delete_checklist', args=[checklist.pk]))
         self.assertFalse(CustomTask.objects.filter(family=self.family).exists())
         self.assertTrue(Checklist.objects.filter(pk=checklist.pk).exists())
+
+
+class DayDigestSyncTests(TestCase):
+    """Synchronisation légère : une empreinte de la journée qui change si — et seulement
+    si — ce que les écrans affichent doit changer."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Sync', invite_code='SYNCFAM1')
+        self.settings = FamilySettings.load(self.family)
+        self.parent = User.objects.create_user('syncparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.today = _today()
+        self.day = DAYS[self.today.weekday()]
+
+    def _digest(self):
+        return _day_digest(self.family, self.today)
+
+    def test_the_digest_is_stable_when_nothing_changes(self):
+        self.assertEqual(self._digest(), self._digest())
+
+    def test_checking_a_task_changes_the_digest(self):
+        before = self._digest()
+        TaskCompletion.objects.create(
+            family=self.family, person='fille', date=self.today, task_id='lit', done=True
+        )
+        self.assertNotEqual(before, self._digest())
+
+    def test_unchecking_brings_the_digest_back(self):
+        start = self._digest()
+        tc = TaskCompletion.objects.create(
+            family=self.family, person='fille', date=self.today, task_id='lit', done=True
+        )
+        self.assertNotEqual(start, self._digest())
+        tc.delete()
+        self.assertEqual(start, self._digest())
+
+    def test_a_help_request_changes_the_digest(self):
+        before = self._digest()
+        HelpRequest.objects.create(
+            family=self.family, person='fille', date=self.today, task_id='lit', active=True
+        )
+        self.assertNotEqual(before, self._digest())
+
+    def test_a_day_mode_changes_the_digest(self):
+        before = self._digest()
+        DayMode.objects.create(
+            family=self.family, person='fille', date=self.today, mode='allegee'
+        )
+        self.assertNotEqual(before, self._digest())
+
+    def test_the_evening_meal_changes_the_digest(self):
+        before = self._digest()
+        recipe = Recipe.objects.create(family=self.family, name='Gratin', category='Autre')
+        WeeklyMenuEntry.objects.create(
+            family=self.family, week_start=_monday_of(self.today), day=self.day, recipe=recipe
+        )
+        self.assertNotEqual(before, self._digest())
+
+    def test_another_day_does_not_change_todays_digest(self):
+        before = self._digest()
+        TaskCompletion.objects.create(
+            family=self.family, person='fille',
+            date=self.today - datetime.timedelta(days=3), task_id='lit', done=True,
+        )
+        self.assertEqual(before, self._digest())
+
+    def test_another_family_never_affects_our_digest(self):
+        other = Family.objects.create(name='Voisins', invite_code='SYNCFAM2')
+        before = self._digest()
+        TaskCompletion.objects.create(
+            family=other, person='fille', date=self.today, task_id='lit', done=True
+        )
+        self.assertEqual(before, self._digest())
+
+    def test_the_endpoint_returns_the_current_digest(self):
+        resp = self.client.get(reverse('day_digest'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['digest'], self._digest())
+
+    def test_the_endpoint_requires_login(self):
+        self.client.logout()
+        self.assertEqual(self.client.get(reverse('day_digest')).status_code, 302)
+
+    def test_the_today_page_carries_its_digest(self):
+        resp = self.client.get(reverse('today'))
+        self.assertEqual(resp.context['digest'], self._digest())
+        self.assertContains(resp, 'data-syncnote')
+
+    def test_the_routine_page_carries_its_digest(self):
+        resp = self.client.get(reverse('routine'))
+        self.assertEqual(resp.context['digest'], self._digest())
+
+    def test_a_bad_date_falls_back_to_today_instead_of_failing(self):
+        resp = self.client.get(reverse('day_digest'), {'date': 'pas-une-date'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['date'], self.today.isoformat())
+
+
+class TabletSyncTests(TestCase):
+    """La tablette de cuisine n'a personne devant elle : elle peut se recharger seule, mais
+    seulement quand quelque chose a bougé. L'ancien <meta refresh> rechargeait toutes les
+    cinq minutes quoi qu'il arrive — un clignotement pour rien, et jusqu'à cinq minutes de
+    retard sur un vrai changement."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Tab', invite_code='TABSYNC1')
+        self.settings = FamilySettings.load(self.family)
+        self.token = self.settings.tablet_token
+        self.today = _today()
+
+    def test_the_tablet_page_no_longer_reloads_blindly(self):
+        resp = self.client.get(reverse('tablet', args=[self.token]))
+        self.assertNotContains(resp, 'http-equiv="refresh"')
+
+    def test_the_tablet_page_carries_its_digest(self):
+        resp = self.client.get(reverse('tablet', args=[self.token]))
+        self.assertEqual(resp.context['digest'], _day_digest(self.family, self.today))
+
+    def test_the_tablet_digest_endpoint_works_without_login(self):
+        resp = self.client.get(reverse('tablet_digest', args=[self.token]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['digest'], _day_digest(self.family, self.today))
+
+    def test_the_tablet_digest_endpoint_reflects_a_change(self):
+        before = self.client.get(reverse('tablet_digest', args=[self.token])).json()['digest']
+        TaskCompletion.objects.create(
+            family=self.family, person='fille', date=self.today, task_id='lit', done=True
+        )
+        after = self.client.get(reverse('tablet_digest', args=[self.token])).json()['digest']
+        self.assertNotEqual(before, after)
+
+    def test_a_wrong_token_is_a_404_and_leaks_nothing(self):
+        resp = self.client.get(reverse('tablet_digest', args=['pas-le-bon-jeton']))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_the_tablet_digest_is_scoped_to_its_own_family(self):
+        other = Family.objects.create(name='Voisins', invite_code='TABSYNC2')
+        FamilySettings.load(other)
+        before = self.client.get(reverse('tablet_digest', args=[self.token])).json()['digest']
+        TaskCompletion.objects.create(
+            family=other, person='fille', date=self.today, task_id='lit', done=True
+        )
+        after = self.client.get(reverse('tablet_digest', args=[self.token])).json()['digest']
+        self.assertEqual(before, after)
