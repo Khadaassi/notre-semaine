@@ -1,0 +1,45 @@
+{% comment %}
+Sélecteur de fréquence, à côté du sélecteur de jours. `days` dit quels jours, celui-ci dit
+quelles semaines. Les champs supplémentaires n'apparaissent que pour la fréquence qui les
+demande — le JS ci-dessous est scopé à chaque [data-freq], comme le sélecteur de jours.
+
+Attend en contexte : frequencies, monthly_choices, today_iso, et facultativement `task`
+(pour pré-remplir en édition) et prefix (`task` par défaut, `apply` pour les checklists).
+Les valeurs partent sous <prefix>_frequency / <prefix>_nth / <prefix>_anchor / <prefix>_date,
+exactement ce que views._read_frequency relit.
+{% endcomment %}
+{% with p=prefix|default:"task" %}
+<div class="freqpicker" data-freq>
+  <label class="freq-main">
+    <span class="freq-label">Fréquence</span>
+    <select name="{{ p }}_frequency" data-freq-select>
+      {% for key, label in frequencies %}
+        <option value="{{ key }}" {% if task.frequency == key %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label class="freq-extra" data-freq-for="monthly" hidden>
+    <span class="freq-label">Quel</span>
+    <select name="{{ p }}_nth">
+      {% for value, label in monthly_choices %}
+        <option value="{{ value }}" {% if task.monthly_nth == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label class="freq-extra" data-freq-for="biweekly" hidden>
+    <span class="freq-label">Semaine de référence</span>
+    <input type="date" name="{{ p }}_anchor"
+           value="{% if task.anchor_week %}{{ task.anchor_week|date:'Y-m-d' }}{% else %}{{ today_iso }}{% endif %}">
+  </label>
+
+  <label class="freq-extra" data-freq-for="once" hidden>
+    <span class="freq-label">Date</span>
+    <input type="date" name="{{ p }}_date"
+           value="{% if task.specific_date %}{{ task.specific_date|date:'Y-m-d' }}{% else %}{{ today_iso }}{% endif %}">
+  </label>
+
+  <p class="freq-note" data-freq-note></p>
+</div>
+{% endwith %}

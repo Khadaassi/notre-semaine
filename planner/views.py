@@ -11,7 +11,7 @@ from django.contrib.auth.views import LoginView
 from django.core.exceptions import PermissionDenied
 from django.db import models, transaction
 from django.http import Http404, JsonResponse
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -23,12 +23,14 @@ from .models import (
     FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem,
     CustomTask, FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars, TaskException,
     format_quantity, TASK_EXCEPTION_KIND_CHOICES, DayMode, DAY_MODE_CHOICES, PERSON_CHOICES,
-    HelpRequest, RoutineReminder, REMINDER_PHASE_CHOICES,
+    HelpRequest, RoutineReminder, REMINDER_PHASE_CHOICES, Checklist,
+    CUSTOM_TASK_FREQUENCIES, MONTHLY_NTH_CHOICES, PHASE_CHOICES,
 )
 from .task_logic import (
     DAYS, DAY_FULL, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for, next_day, pillar_for,
     is_zone_b_holiday, DEEP_CLEAN_ROOMS, group_by_phase, apply_order, parse_free_time,
     split_by_exceptions, find_schedule_conflicts, active_day_mode, activities_on,
+    days_summary, custom_task_occurs_on,
     phase_for_time,
 )
 from .default_data import DEFAULT_RECIPES, DEFAULT_GROCERY, DEFAULT_ACTIVITIES
@@ -156,18 +158,53 @@ def _family_people(settings):
     return _kids_people(settings) + ['maman', 'papa']
 
 
-def _days_summary(days):
-    """Human recap of a CustomTask's recurrence, for the confirmation flash — the server-side
-    counterpart of the live summary in _day_picker.html. Recognises the same three shortcuts
-    (tous les jours / jours d'école / week-end) so the wording matches what was clicked."""
-    ordered = [d for d in DAYS if d in days]
-    if len(ordered) == len(DAYS):
-        return 'tous les jours'
-    if set(ordered) == set(SCHOOL_DAYS):
-        return "les jours d'école"
-    if set(ordered) == set(WEEKEND_DAYS):
-        return 'le week-end'
-    return ', '.join(ordered)
+# La formulation vit avec la règle, dans task_logic : les modèles la réutilisent aussi.
+_days_summary = days_summary
+
+
+def _read_frequency(request, prefix='task'):
+    """Lit les champs de fréquence d'un formulaire de tâche personnalisée.
+
+    Renvoie (defaults, erreur). Chaque fréquence a besoin d'une information de plus, et on
+    refuse plutôt que de deviner : une tâche « une semaine sur deux » sans semaine de
+    référence ou « une seule fois » sans date ne veut rien dire, et se rabattre en silence
+    sur l'hebdomadaire ferait apparaître la tâche bien plus souvent que demandé."""
+    frequency = request.POST.get(f'{prefix}_frequency', 'weekly')
+    if frequency not in dict(CUSTOM_TASK_FREQUENCIES):
+        frequency = 'weekly'
+    defaults = {
+        'frequency': frequency, 'anchor_week': None,
+        'monthly_nth': None, 'specific_date': None,
+    }
+
+    if frequency == 'once':
+        raw = request.POST.get(f'{prefix}_date', '').strip()
+        try:
+            defaults['specific_date'] = datetime.date.fromisoformat(raw)
+        except ValueError:
+            return None, "Choisissez une date pour une tâche ponctuelle."
+
+    elif frequency == 'biweekly':
+        raw = request.POST.get(f'{prefix}_anchor', '').strip()
+        if raw:
+            try:
+                anchor = datetime.date.fromisoformat(raw)
+            except ValueError:
+                return None, "Semaine de référence invalide."
+        else:
+            anchor = _today()
+        defaults['anchor_week'] = _monday_of(anchor)
+
+    elif frequency == 'monthly':
+        try:
+            nth = int(request.POST.get(f'{prefix}_nth', 1))
+        except (TypeError, ValueError):
+            nth = 1
+        if nth not in dict(MONTHLY_NTH_CHOICES):
+            nth = 1
+        defaults['monthly_nth'] = nth
+
+    return defaults, None
 
 
 def _custom_task_error(label, days):
@@ -1253,15 +1290,36 @@ def menu(request):
     for r in display_recipes:
         by_cat.setdefault(r.category, []).append(r)
 
-    entries = {e.day: e.recipe_id for e in WeeklyMenuEntry.objects.filter(family=family, week_start=week_start)}
-    chosen_ids = [v for v in entries.values() if v]
-    chosen_recipes = Recipe.objects.filter(family=family, id__in=chosen_ids)
-    all_ingredients = Recipe.aggregate_ingredients(chosen_recipes)
+    settings = FamilySettings.load(family)
+    entries = {
+        e.day: e for e in
+        WeeklyMenuEntry.objects.filter(family=family, week_start=week_start).select_related('recipe')
+    }
+    # Un jour « restes » ne cuisine rien et n'achète rien : il ne pèse donc pas dans les
+    # courses. Les portions réellement prévues, elles, comptent — c'est ce qui fait que
+    # cuisiner pour deux repas achète bien pour deux repas.
+    portions = [
+        (e.recipe, e.servings_target(settings.household_servings))
+        for e in entries.values() if e.recipe and not e.is_leftovers()
+    ]
+    all_ingredients = Recipe.aggregate_scaled(portions)
     for ing in all_ingredients:
         qty_text = format_quantity(ing['quantity'])
         ing['quantity_display'] = f"{qty_text} {ing['unit']}".strip() if qty_text else ing['unit']
 
-    day_rows = [{'day': d, 'label': DAY_FULL[d], 'selected': entries.get(d)} for d in DAYS]
+    day_rows = []
+    for d in DAYS:
+        entry = entries.get(d)
+        day_rows.append({
+            'day': d, 'label': DAY_FULL[d],
+            'selected': entry.recipe_id if entry else None,
+            'servings': entry.servings if entry else None,
+            'servings_target': entry.servings_target(settings.household_servings) if entry else settings.household_servings,
+            'leftovers_from': entry.leftovers_from if entry else '',
+            'leftovers_label': DAY_FULL.get(entry.leftovers_from, '') if entry else '',
+            'recipe': entry.recipe if entry else None,
+            'other_days': [(o, DAY_FULL[o]) for o in DAYS if o != d],
+        })
     recipe_form = RecipeForm()
     pending_conflicts = None
 
@@ -1282,12 +1340,70 @@ def menu(request):
         elif 'set_day' in request.POST:
             day = request.POST['set_day']
             recipe_id = request.POST.get('recipe_id') or None
+            if day not in DAYS:
+                messages.error(request, "Jour invalide.")
+                return _menu_redirect(request, week_start)
             if recipe_id and not Recipe.objects.filter(id=recipe_id, family=family).exists():
                 messages.error(request, "Recette invalide.")
                 return _menu_redirect(request, week_start)
+            # Choisir un plat lève les restes : les deux ne peuvent pas cohabiter.
             WeeklyMenuEntry.objects.update_or_create(
-                family=family, week_start=week_start, day=day, defaults={'recipe_id': recipe_id}
+                family=family, week_start=week_start, day=day,
+                defaults={'recipe_id': recipe_id, 'leftovers_from': ''},
             )
+            return _menu_redirect(request, week_start)
+        elif 'set_servings' in request.POST:
+            day = request.POST.get('day')
+            raw = request.POST.get('servings', '').strip()
+            if day not in DAYS:
+                messages.error(request, "Jour invalide.")
+                return _menu_redirect(request, week_start)
+            try:
+                servings = int(raw) if raw else None
+            except ValueError:
+                messages.error(request, "Indiquez un nombre de personnes.")
+                return _menu_redirect(request, week_start)
+            if servings is not None and not 1 <= servings <= 50:
+                messages.error(request, "Le nombre de personnes doit être compris entre 1 et 50.")
+                return _menu_redirect(request, week_start)
+            WeeklyMenuEntry.objects.update_or_create(
+                family=family, week_start=week_start, day=day,
+                defaults={'servings': servings},
+            )
+            return _menu_redirect(request, week_start)
+        elif 'cook_double' in request.POST:
+            # « Cuisiner pour deux repas » : on double les portions du jour cuisiné et on
+            # marque le jour cible comme restes. Une seule action pour ce que les familles
+            # font vraiment, au lieu de deux réglages à retrouver séparément.
+            day = request.POST.get('day')
+            target = request.POST.get('leftovers_day')
+            if day not in DAYS or target not in DAYS or day == target:
+                messages.error(request, "Choisissez un autre jour pour les restes.")
+                return _menu_redirect(request, week_start)
+            entry = WeeklyMenuEntry.objects.filter(
+                family=family, week_start=week_start, day=day
+            ).select_related('recipe').first()
+            if entry is None or not entry.recipe:
+                messages.error(request, "Choisissez d'abord un plat pour ce jour.")
+                return _menu_redirect(request, week_start)
+            base = entry.servings_target(settings.household_servings)
+            entry.servings = base * 2
+            entry.save(update_fields=['servings'])
+            WeeklyMenuEntry.objects.update_or_create(
+                family=family, week_start=week_start, day=target,
+                defaults={'recipe': None, 'servings': None, 'leftovers_from': day},
+            )
+            messages.success(
+                request,
+                f"{DAY_FULL[day]} cuisiné pour {base * 2} personnes, {DAY_FULL[target]} en restes.",
+            )
+            return _menu_redirect(request, week_start)
+        elif 'clear_leftovers' in request.POST:
+            day = request.POST.get('day')
+            if day in DAYS:
+                WeeklyMenuEntry.objects.filter(
+                    family=family, week_start=week_start, day=day
+                ).update(leftovers_from='')
             return _menu_redirect(request, week_start)
         elif 'copy_to_courses' in request.POST:
             # Explicit conflict handling (Lot 4, point 5): copy_to_courses used to be a
@@ -1357,7 +1473,59 @@ def menu(request):
         'by_cat': by_cat, 'day_rows': day_rows, 'recipes': recipes,
         'all_ingredients': all_ingredients, 'recipe_form': recipe_form,
         'favoris_only': favoris_only, 'pending_conflicts': pending_conflicts, 'wizard': wizard,
+        'settings': settings, 'household_servings': settings.household_servings,
         **_week_context(week_start),
+    })
+
+
+@login_required
+def cook_mode(request, pk):
+    """Mode cuisine : une recette, une étape à la fois, en grand.
+
+    Pensé pour un plan de travail : gros caractères, une seule étape visible, et les
+    ingrédients déjà ramenés au nombre de personnes prévu — on ne veut pas faire une règle
+    de trois les mains dans la farine. Le nombre de couverts vient du repas planifié quand
+    on arrive depuis le menu, du réglage de la famille sinon, et reste ajustable ici.
+
+    Lecture seule : cet écran ne modifie ni la recette ni le menu. L'avancement dans les
+    étapes vit dans la page, volontairement — une étape cochée n'a pas de sens le lendemain,
+    et personne n'a envie de « réinitialiser la recette » avant de cuisiner."""
+    family = _get_family(request)
+    recipe = get_object_or_404(Recipe, pk=pk, family=family)
+    settings = FamilySettings.load(family)
+
+    try:
+        asked = int(request.GET.get('portions', ''))
+    except (TypeError, ValueError):
+        asked = None
+    if asked is not None and not 1 <= asked <= 50:
+        asked = None
+
+    servings = asked
+    if servings is None:
+        day = request.GET.get('day')
+        week_start = _week_start_from_request(request)
+        entry = WeeklyMenuEntry.objects.filter(
+            family=family, week_start=week_start, day=day, recipe=recipe
+        ).first() if day in DAYS else None
+        servings = (entry.servings_target(settings.household_servings) if entry
+                    else settings.household_servings)
+
+    ingredients = []
+    for ing in recipe.scaled_ingredients(servings):
+        qty_text = format_quantity(ing['quantity'])
+        ingredients.append({
+            'name': ing['name'],
+            'quantity_display': f"{qty_text} {ing['unit']}".strip() if qty_text else ing['unit'],
+        })
+
+    return render(request, 'planner/cook.html', {
+        'recipe': recipe,
+        'servings': servings,
+        'ingredients': ingredients,
+        'steps': list(recipe.steps or []),
+        'scaled': servings != recipe.servings,
+        'back_url': f"{reverse('menu')}?week={_week_start_from_request(request).isoformat()}",
     })
 
 
@@ -1391,15 +1559,20 @@ def settings_view(request):
         elif 'add_custom_task' in request.POST:
             label = request.POST.get('task_label', '').strip()
             days_selected = [d for d in request.POST.getlist('task_days') if d in DAYS]
-            if label and days_selected:
-                CustomTask.objects.create(
+            freq, freq_error = _read_frequency(request)
+            # Une tâche ponctuelle porte sa date : elle n'a pas besoin de jours de semaine.
+            needs_days = freq is not None and freq['frequency'] != 'once'
+            if freq_error:
+                messages.error(request, freq_error)
+            elif label and (days_selected or not needs_days):
+                task = CustomTask.objects.create(
                     family=family,
                     person=request.POST.get('task_person', 'fille'),
                     days=days_selected,
                     period=request.POST.get('task_period', 'matin'),
-                    label=label,
+                    label=label, **freq,
                 )
-                messages.success(request, f"Tâche ajoutée — {_days_summary(days_selected)}.")
+                messages.success(request, f"Tâche ajoutée — {task.frequency_display()}.")
             else:
                 messages.error(request, _custom_task_error(label, days_selected))
         elif 'save_rewards' in request.POST:
@@ -1411,6 +1584,24 @@ def settings_view(request):
             settings.star_reward_text = request.POST.get('star_reward_text', '').strip()
             settings.save()
             messages.success(request, "Récompense enregistrée.")
+        elif 'add_checklist' in request.POST:
+            name = request.POST.get('cl_name', '').strip()
+            # Un élément par ligne : c'est ainsi qu'on recopie une liste déjà écrite ailleurs.
+            items = [l.strip() for l in request.POST.get('cl_items', '').splitlines() if l.strip()]
+            if not name:
+                messages.error(request, "Donnez un nom à la checklist.")
+            elif not items:
+                messages.error(request, "Ajoutez au moins un élément, un par ligne.")
+            else:
+                Checklist.objects.create(
+                    family=family, name=name, items=items,
+                    person=request.POST.get('cl_person', 'fille'),
+                    period=request.POST.get('cl_period', 'matin'),
+                )
+                messages.success(
+                    request,
+                    f"Checklist « {name} » enregistrée ({len(items)} élément{'s' if len(items) > 1 else ''}).",
+                )
         elif 'add_reminder' in request.POST:
             person = request.POST.get('rem_person', 'fille')
             days_selected = [d for d in request.POST.getlist('rem_days') if d in DAYS]
@@ -1463,6 +1654,12 @@ def settings_view(request):
             settings.courses_day = request.POST.get('courses_day', settings.courses_day)
             settings.papa_travaille = 'papa_travaille' in request.POST
             settings.week_note = request.POST.get('week_note', '')
+            try:
+                household = int(request.POST.get('household_servings', settings.household_servings))
+                if 1 <= household <= 50:
+                    settings.household_servings = household
+            except (TypeError, ValueError):
+                pass
             settings.save()
             messages.success(request, "Réglages enregistrés.")
         return _wizard_redirect(request, 'settings')
@@ -1475,6 +1672,9 @@ def settings_view(request):
         c.person_name = _person_label(c.person, settings)
     members = FamilyMembership.objects.filter(family=family).select_related('user')
     tablet_url = request.build_absolute_uri(reverse('tablet', args=[settings.tablet_token])) if settings.tablet_token else ''
+    checklists = list(Checklist.objects.filter(family=family))
+    for cl in checklists:
+        cl.person_name = _person_label(cl.person, settings)
     reminders = list(RoutineReminder.objects.filter(family=family))
     for r in reminders:
         r.person_name = _person_label(r.person, settings)
@@ -1496,6 +1696,10 @@ def settings_view(request):
         'school_days_csv': ','.join(SCHOOL_DAYS), 'weekend_days_csv': ','.join(WEEKEND_DAYS),
         'task_exceptions': task_exceptions, 'wizard': wizard,
         'reminders': reminders, 'reminder_phases': REMINDER_PHASE_CHOICES,
+        'checklists': checklists, 'frequencies': CUSTOM_TASK_FREQUENCIES,
+        'monthly_choices': MONTHLY_NTH_CHOICES, 'phases': PHASE_CHOICES,
+        'all_people': [(p, _person_label(p, settings)) for p in _family_people(settings)],
+        'today_iso': _today().isoformat(),
         'kid_people': [(p, _person_label(p, settings)) for p in _kids_people(settings)],
     })
 
@@ -1550,6 +1754,76 @@ def delete_activity(request, pk):
 def delete_custom_task(request, pk):
     CustomTask.objects.filter(pk=pk, family=_get_family(request)).delete()
     messages.success(request, "Tâche supprimée.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+@require_POST
+def apply_checklist(request, pk):
+    """Transforme une checklist en vraies tâches personnalisées.
+
+    Une checklist est un modèle : l'appliquer crée une CustomTask par élément, avec la
+    personne, le moment et la fréquence choisis au moment de l'application. Les tâches
+    créées vivent ensuite leur vie — on les réordonne, on les décale, on les supprime comme
+    n'importe quelle autre, et modifier la checklist plus tard ne les retouche pas.
+
+    Un élément déjà présent à l'identique (même personne, même intitulé) est passé : on
+    peut réappliquer une liste sans se retrouver avec des doublons."""
+    family = _get_family(request)
+    checklist = Checklist.objects.filter(pk=pk, family=family).first()
+    if checklist is None:
+        messages.error(request, "Checklist introuvable.")
+        return redirect('settings')
+
+    person = request.POST.get('apply_person', checklist.person)
+    if person not in PERSON_KEYS:
+        messages.error(request, "Personne invalide.")
+        return redirect('settings')
+    period = request.POST.get('apply_period', checklist.period)
+    if period not in dict(PHASE_CHOICES):
+        period = checklist.period
+    days_selected = [d for d in request.POST.getlist('apply_days') if d in DAYS]
+    freq, freq_error = _read_frequency(request, prefix='apply')
+    if freq_error:
+        messages.error(request, freq_error)
+        return redirect('settings')
+    if freq['frequency'] != 'once' and not days_selected:
+        messages.error(request, "Choisissez au moins un jour pour appliquer cette checklist.")
+        return redirect('settings')
+
+    existing = set(
+        CustomTask.objects.filter(family=family, person=person)
+        .values_list('label', flat=True)
+    )
+    created = 0
+    for label in checklist.items_list():
+        if label in existing:
+            continue
+        CustomTask.objects.create(
+            family=family, person=person, days=days_selected,
+            period=period, label=label, **freq,
+        )
+        existing.add(label)
+        created += 1
+
+    skipped = checklist.item_count() - created
+    if created:
+        message = f"{created} tâche{'s' if created > 1 else ''} ajoutée{'s' if created > 1 else ''} depuis « {checklist.name} »."
+        if skipped:
+            message += f" {skipped} déjà présente{'s' if skipped > 1 else ''}, non dupliquée{'s' if skipped > 1 else ''}."
+        messages.success(request, message)
+    else:
+        messages.success(request, f"Tout « {checklist.name} » était déjà en place, rien ajouté.")
+    return redirect('settings')
+
+
+@login_required
+@parent_required
+@require_POST
+def delete_checklist(request, pk):
+    Checklist.objects.filter(pk=pk, family=_get_family(request)).delete()
+    messages.success(request, "Checklist supprimée.")
     return redirect('settings')
 
 
@@ -1686,13 +1960,19 @@ def edit_custom_task(request, pk):
     if request.method == 'POST':
         label = request.POST.get('task_label', '').strip()
         days_selected = [d for d in request.POST.getlist('task_days') if d in DAYS]
-        if label and days_selected:
+        freq, freq_error = _read_frequency(request)
+        needs_days = freq is not None and freq['frequency'] != 'once'
+        if freq_error:
+            messages.error(request, freq_error)
+        elif label and (days_selected or not needs_days):
             task.label = label
             task.person = request.POST.get('task_person', task.person)
             task.period = request.POST.get('task_period', task.period)
             task.days = days_selected
+            for field, value in freq.items():
+                setattr(task, field, value)
             task.save()
-            messages.success(request, f"Tâche modifiée — {_days_summary(days_selected)}.")
+            messages.success(request, f"Tâche modifiée — {task.frequency_display()}.")
         else:
             messages.error(request, _custom_task_error(label, days_selected))
     return redirect('settings')

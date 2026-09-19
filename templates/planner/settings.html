@@ -1,4 +1,5 @@
 {% extends "planner/base.html" %}
+{% load fr %}
 {% block content %}
 {% if wizard %}{% include "planner/_wizard_banner.html" %}{% endif %}
 <div class="card">
@@ -49,6 +50,11 @@
       <label><input type="checkbox" name="papa_travaille" {% if settings.papa_travaille %}checked{% endif %}> Papa a repris le travail</label>
     </div>
     <div class="settingsrow">
+      <label for="household_servings">Nombre de personnes à table</label>
+      <input type="number" id="household_servings" name="household_servings" min="1" max="50"
+             value="{{ settings.household_servings }}">
+    </div>
+    <div class="settingsrow">
       <label>Note de la semaine</label>
       <textarea name="week_note">{{ settings.week_note }}</textarea>
     </div>
@@ -85,7 +91,7 @@
   <div class="hint">S'ajoutent à la routine habituelle, sans toucher au code. Choisis les jours où la tâche revient :
     une seule tâche est enregistrée, avec sa récurrence.</div>
   {% for c in custom_tasks %}
-    <div class="pill">{{ c.person_name }} — {{ c.label }} — {{ c.days_display }} ({{ c.get_period_display }})
+    <div class="pill">{{ c.person_name }} — {{ c.label }} — {{ c.frequency_display }} ({{ c.get_period_display }})
       <form method="post" action="{% url 'delete_custom_task' c.id %}" style="display:inline;" onsubmit="return confirm('Supprimer cette tâche ?');">{% csrf_token %}
         <button type="submit" class="delbtn">✕</button>
       </form>
@@ -102,6 +108,7 @@
         </select>
         <input type="text" name="task_label" value="{{ c.label }}" placeholder="Tâche">
         {% include "planner/_day_picker.html" with selected_days=c.days %}
+        {% include "planner/_frequency_picker.html" with task=c %}
         <select name="task_period">
           <option value="matin" {% if c.period == 'matin' %}selected{% endif %}>Matin</option>
           <option value="journee" {% if c.period == 'journee' %}selected{% endif %}>Journée</option>
@@ -121,12 +128,80 @@
     </select>
     <input type="text" name="task_label" placeholder="Tâche">
     {% include "planner/_day_picker.html" %}
+    {% include "planner/_frequency_picker.html" %}
     <select name="task_period">
       <option value="matin">Matin</option>
       <option value="journee">Journée</option>
       <option value="soir">Soir</option>
     </select>
     <button type="submit" name="add_custom_task" value="1">Ajouter</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Checklists réutilisables</h2>
+  <div class="hint">
+    Une liste type — sac de piscine, départ en vacances, rentrée — qu'on applique en une fois.
+    L'appliquer crée de vraies tâches : elles se réordonnent, se décalent et se suppriment
+    comme les autres. Modifier la checklist ensuite ne retouche pas les tâches déjà créées.
+  </div>
+
+  {% for cl in checklists %}
+    <details class="edit-details">
+      <summary>{{ cl.name }} — {{ cl.item_count }} élément{{ cl.item_count|pluriel }}</summary>
+      <div class="tagrow" style="margin:8px 0;">
+        {% for item in cl.items_list %}<span class="tag">{{ item }}</span>{% endfor %}
+      </div>
+      <form method="post" action="{% url 'apply_checklist' cl.pk %}" class="addrow" style="flex-wrap:wrap;">
+        {% csrf_token %}
+        <select name="apply_person" aria-label="Appliquer à">
+          {% for key, name in all_people %}
+            <option value="{{ key }}" {% if cl.person == key %}selected{% endif %}>{{ name }}</option>
+          {% endfor %}
+        </select>
+        <select name="apply_period" aria-label="Moment de la journée">
+          {% for key, label in phases %}
+            <option value="{{ key }}" {% if cl.period == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        {% include "planner/_day_picker.html" with day_field="apply_days" %}
+        {% include "planner/_frequency_picker.html" with prefix="apply" %}
+        <button type="submit">Appliquer</button>
+      </form>
+      <form method="post" action="{% url 'delete_checklist' cl.pk %}" style="margin-top:8px;"
+            onsubmit="return confirm('Supprimer cette checklist ? Les tâches déjà créées sont conservées.');">
+        {% csrf_token %}
+        <button type="submit" class="delbtn">Supprimer la checklist</button>
+      </form>
+    </details>
+  {% empty %}
+    <div class="hint">Aucune checklist pour le moment.</div>
+  {% endfor %}
+
+  <form method="post" style="margin-top:12px;">
+    {% csrf_token %}
+    <div class="settingsrow">
+      <label for="cl_name">Nom de la checklist</label>
+      <input type="text" id="cl_name" name="cl_name" placeholder="Sac de piscine">
+    </div>
+    <div class="settingsrow">
+      <label for="cl_items">Éléments (un par ligne)</label>
+      <textarea id="cl_items" name="cl_items" rows="4"
+                placeholder="Maillot de bain&#10;Serviette&#10;Bonnet&#10;Lunettes"></textarea>
+    </div>
+    <div class="settingsrow">
+      <label for="cl_person">Par défaut pour</label>
+      <select id="cl_person" name="cl_person">
+        {% for key, name in all_people %}<option value="{{ key }}">{{ name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="settingsrow">
+      <label for="cl_period">Moment</label>
+      <select id="cl_period" name="cl_period">
+        {% for key, label in phases %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+      </select>
+    </div>
+    <button type="submit" name="add_checklist" value="1">Enregistrer la checklist</button>
   </form>
 </div>
 
@@ -258,6 +333,36 @@
 </div>
 
 <script>
+/* ---- Sélecteur de fréquence (voir _frequency_picker.html) ----
+   N'affiche que le champ dont la fréquence choisie a besoin. Sans JS, tous les champs
+   restent visibles et le formulaire fonctionne quand même : le serveur ne lit de toute
+   façon que ceux qui correspondent à la fréquence envoyée. */
+(function () {
+  const NOTES = {
+    weekly: "Aux jours cochés, chaque semaine.",
+    biweekly: "Aux jours cochés, une semaine sur deux à partir de la semaine de référence.",
+    monthly: "Aux jours cochés, une seule fois par mois.",
+    once: "Une seule fois, à la date choisie — les jours cochés sont ignorés.",
+  };
+
+  document.querySelectorAll('[data-freq]').forEach(box => {
+    const select = box.querySelector('[data-freq-select]');
+    const extras = Array.from(box.querySelectorAll('[data-freq-for]'));
+    const note = box.querySelector('[data-freq-note]');
+    function render() {
+      const value = select.value;
+      extras.forEach(el => { el.hidden = el.dataset.freqFor !== value; });
+      note.textContent = NOTES[value] || '';
+      // Une tâche ponctuelle porte sa date : le sélecteur de jours n'a plus de rôle.
+      const form = box.closest('form');
+      const picker = form && form.querySelector('[data-daypicker]');
+      if (picker) picker.hidden = value === 'once';
+    }
+    select.addEventListener('change', render);
+    render();
+  });
+})();
+
 /* ---- Sélecteur de jours (voir _day_picker.html) ----
    Chaque [data-daypicker] est autonome : la page en contient un par formulaire de tâche
    (ajout + une modification par tâche existante). Les raccourcis ne font que cocher des

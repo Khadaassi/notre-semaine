@@ -91,6 +91,79 @@ def phase_for_time(value):
     return 'soir'
 
 
+def days_summary(days):
+    """Human recap of a recurrence's weekdays, for flashes and settings rows. Recognises the
+    same three shortcuts as the day picker (tous les jours / jours d'école / week-end) so the
+    wording matches what was clicked.
+
+    Vit ici plutôt que dans views : les modèles s'en servent aussi pour décrire une tâche,
+    et une phrase qui décrit une règle doit être au même endroit que la règle."""
+    ordered = [d for d in DAYS if d in (days or [])]
+    if not ordered:
+        return 'aucun jour'
+    if len(ordered) == len(DAYS):
+        return 'tous les jours'
+    if set(ordered) == set(SCHOOL_DAYS):
+        return "les jours d'école"
+    if set(ordered) == set(WEEKEND_DAYS):
+        return 'le week-end'
+    return ', '.join(ordered)
+
+
+def nth_weekday_of_month(date):
+    """Rang de cette date parmi les mêmes jours de la semaine de son mois : le 3e mardi du
+    mois renvoie 3. Sert à la fréquence mensuelle."""
+    return (date.day - 1) // 7 + 1
+
+
+def is_last_weekday_of_month(date):
+    """True si aucune autre date du mois ne partage ce jour de la semaine après celle-ci —
+    « le dernier samedi du mois », qui tombe le 4e ou le 5e selon les mois."""
+    return (date + datetime.timedelta(days=7)).month != date.month
+
+
+def custom_task_occurs_on(task, date):
+    """Règle unique : cette tâche personnalisée a-t-elle lieu à cette date ?
+
+    Une seule fonction pour les quatre fréquences, afin qu'aucun écran ne puisse en appliquer
+    une variante à lui. `days` dit toujours quels jours de la semaine ; la fréquence dit
+    quelles semaines parmi celles-là.
+
+    Sans date (les appels historiques qui ne raisonnent qu'en jour de semaine), on ne peut
+    juger que de l'hebdomadaire : les autres fréquences ont besoin d'une date réelle et
+    répondent False plutôt que de s'afficher tous les jours par défaut."""
+    frequency = getattr(task, 'frequency', 'weekly') or 'weekly'
+
+    if frequency == 'once':
+        return bool(task.specific_date) and date is not None and task.specific_date == date
+
+    if date is None:
+        return frequency == 'weekly'
+
+    day = DAYS[date.weekday()]
+    if day not in (task.days or []):
+        return False
+
+    if frequency == 'weekly':
+        return True
+
+    if frequency == 'biweekly':
+        anchor = task.anchor_week
+        if not anchor:
+            return True   # sans référence, on ne saute rien : mieux vaut trop que rien
+        monday = date - datetime.timedelta(days=date.weekday())
+        anchor_monday = anchor - datetime.timedelta(days=anchor.weekday())
+        return ((monday - anchor_monday).days // 7) % 2 == 0
+
+    if frequency == 'monthly':
+        nth = task.monthly_nth or 1
+        if nth == -1:
+            return is_last_weekday_of_month(date)
+        return nth_weekday_of_month(date) == nth
+
+    return True
+
+
 def find_schedule_conflicts(day_activities):
     """Flags Activity rows (any iterable exposing .id, .person, .accompanied_by,
     .start_time, .end_time) that clash with another activity the same day: either the
@@ -549,6 +622,14 @@ def tasks_for(person, day, settings, activities, holiday_today=False, holiday_to
         tasks = []
     if custom_tasks:
         for ct in custom_tasks:
-            if ct.person == person and day in ct.days:
-                tasks.append(t(f'custom_{ct.id}', ct.label, ct.period))
+            if ct.person != person:
+                continue
+            # La date, quand on l'a, tranche pour les fréquences avancées ; sinon on retombe
+            # sur la règle hebdomadaire, comme avant.
+            if date is not None:
+                if not custom_task_occurs_on(ct, date):
+                    continue
+            elif day not in (ct.days or []):
+                continue
+            tasks.append(t(f'custom_{ct.id}', ct.label, ct.period))
     return _apply_day_mode(tasks, day_mode)

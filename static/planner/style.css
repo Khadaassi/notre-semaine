@@ -147,6 +147,8 @@ nav.tabs a .nav-icon{margin-right:6px;}
 .icon-activite{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23000' stroke='none'%3E%3Cpath d='M13 2L3 14h7l-1 8 11-14h-8z'/%3E%3C/svg%3E");}
 .icon-clock{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3.5 2'/%3E%3C/svg%3E");}
 .icon-etoile{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23000' stroke='none'%3E%3Cpath d='M12 2.5l2.9 6 6.6.7-4.9 4.6 1.3 6.5L12 16.9 6.1 20.3l1.3-6.5-4.9-4.6 6.6-.7z'/%3E%3C/svg%3E");}
+.icon-restes{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 9h16l-1.2 10.2a2 2 0 0 1-2 1.8H7.2a2 2 0 0 1-2-1.8z'/%3E%3Cpath d='M8.5 9V6.5a3.5 3.5 0 0 1 7 0V9'/%3E%3C/svg%3E");}
+.icon-cuisine{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 13h16'/%3E%3Cpath d='M5 13a7 7 0 0 1 14 0'/%3E%3Cpath d='M3 16.5h18'/%3E%3Cpath d='M6 20h12'/%3E%3C/svg%3E");}
 .icon-cloche{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8'/%3E%3Cpath d='M13.7 21a2 2 0 0 1-3.4 0'/%3E%3C/svg%3E");}
 .icon-checklist{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 6.5l2 2 3-3.5'/%3E%3Cpath d='M3.5 13l2 2 3-3.5'/%3E%3Cpath d='M3.5 19.5l2 2 3-3.5'/%3E%3Cline x1='12' y1='7' x2='21' y2='7'/%3E%3Cline x1='12' y1='13.5' x2='21' y2='13.5'/%3E%3Cline x1='12' y1='20' x2='21' y2='20'/%3E%3C/svg%3E");}
 .icon-aide{--i:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.9-2.8 2.9'/%3E%3Cpath d='M12 17.2h.01'/%3E%3C/svg%3E");}
@@ -751,4 +753,68 @@ button:active{transform:translate(3px,3px) !important;box-shadow:none !important
 @media(max-width:480px){
   .prep-step{flex-wrap:wrap;}
   .prep-state{margin-left:45px;}
+}
+
+/* ---- Portions, restes et mode cuisine ---- */
+.menurow.is-leftovers{background:#fff8e8;}
+.leftovers-note{flex:1;display:flex;align-items:center;gap:7px;font-size:13px;font-weight:800;color:var(--navy);}
+.leftovers-note .row-icon{width:17px;height:17px;color:var(--sun);}
+.menurow-extra{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:0 4px 10px 4px;
+  border-bottom:1px dashed var(--line);margin-bottom:6px;}
+.menurow-extra form{display:flex;align-items:center;gap:5px;margin:0;}
+.menurow-extra label{font-size:12px;font-weight:800;color:var(--navy-2);margin:0;}
+.menurow-extra span{font-size:12px;font-weight:700;color:var(--navy-2);}
+.menurow-extra input[type=number]{width:62px;padding:5px 7px;font-size:13px;}
+.menurow-extra select{padding:5px 7px;font-size:12.5px;max-width:130px;}
+.menurow-extra button{font-size:12px;padding:6px 10px;min-height:0;}
+.cook-link{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:800;
+  text-decoration:none;color:#fff;background:var(--plum);border:2px solid var(--navy);
+  border-radius:999px;padding:6px 12px;box-shadow:2px 2px 0 var(--navy);}
+.cook-link .row-icon{width:15px;height:15px;color:#fff;}
+
+.cook-head{display:flex;align-items:center;gap:11px;margin-bottom:14px;flex-wrap:wrap;}
+.cook-head h2{margin:0;font-size:21px;color:var(--navy);}
+.cook-back{font-size:12.5px;font-weight:800;text-decoration:none;color:var(--navy);background:white;
+  border:2px solid var(--navy);border-radius:999px;padding:7px 13px;box-shadow:2px 2px 0 var(--navy);}
+.cook-card{padding:16px 15px;}
+.cook-portions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0;}
+.cook-portions label,.cook-portions span{font-size:14px;font-weight:800;color:var(--navy);margin:0;}
+.cook-portions input{width:78px;font-size:16px;padding:7px 9px;}
+.cook-portions button{font-size:13px;padding:8px 13px;min-height:0;}
+.cook-sub{font-family:var(--font-display);font-size:15px;color:var(--plum-dk);margin:16px 0 8px;}
+.cook-ing{list-style:none;padding:0;margin:0;}
+.cook-ing li{border-bottom:1px dashed var(--line);}
+.cook-check{display:flex;align-items:center;gap:10px;padding:11px 2px;cursor:pointer;font-size:16px;}
+.cook-check input{width:22px;height:22px;flex:0 0 22px;}
+.cook-check input:checked ~ .cook-ing-name,.cook-check input:checked ~ .cook-ing-qty{
+  text-decoration:line-through;color:var(--muted);}
+.cook-ing-name{font-weight:700;color:var(--navy);}
+.cook-ing-qty{margin-left:auto;font-weight:800;color:var(--plum-dk);white-space:nowrap;}
+.cook-step-head .progressbar{margin:6px 0 12px;}
+.cook-step-text{font-size:19px;line-height:1.5;font-weight:700;color:var(--navy);margin:0 0 16px;
+  min-height:3.4em;}
+.cook-step-nav{display:flex;gap:9px;}
+.cook-step-nav button{flex:1;min-height:52px;font-size:15px;}
+.cook-step-nav button[disabled]{opacity:.45;}
+.cook-all{margin-top:14px;}
+.cook-all summary{cursor:pointer;font-size:12.5px;font-weight:800;color:var(--plum-dk);}
+.cook-all ol{margin:8px 0 0;padding-left:20px;font-size:13.5px;font-weight:600;color:var(--navy);line-height:1.5;}
+@media(max-width:480px){
+  .menurow-extra{gap:6px;}
+  .menurow-extra select{max-width:110px;}
+  .cook-step-text{font-size:17px;}
+}
+
+/* ---- Sélecteur de fréquence (voir _frequency_picker.html) ---- */
+.freqpicker{display:flex;flex-wrap:wrap;align-items:flex-end;gap:9px;width:100%;
+  background:#f7f5ff;border:2px solid var(--line);border-radius:12px;padding:9px 11px;margin:2px 0;}
+.freqpicker label{display:flex;flex-direction:column;gap:3px;margin:0;}
+.freq-label{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;
+  color:var(--plum-dk);}
+.freqpicker select,.freqpicker input[type=date]{padding:6px 9px;font-size:13px;}
+.freq-note{width:100%;margin:2px 0 0;font-size:11.5px;font-weight:600;color:var(--navy-2);}
+@media(max-width:480px){
+  .freqpicker{gap:7px;padding:8px 9px;}
+  .freqpicker label{flex:1 1 130px;}
+  .freqpicker select,.freqpicker input[type=date]{width:100%;}
 }

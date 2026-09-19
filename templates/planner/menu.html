@@ -1,22 +1,61 @@
 {% extends "planner/base.html" %}
+{% load fr %}
 {% block content %}
 {% if wizard %}{% include "planner/_wizard_banner.html" %}{% endif %}
 <div class="card">
   <h2>Menu de la semaine</h2>
   {% include "planner/_week_banner.html" %}
+  <div class="hint">
+    Les portions par défaut suivent le réglage de la famille ({{ household_servings }} personne{{ household_servings|pluriel }}).
+    Un jour en « restes » ne compte pas dans les courses.
+  </div>
   {% for row in day_rows %}
-    <div class="menurow">
+    <div class="menurow {% if row.leftovers_from %}is-leftovers{% endif %}">
       <div class="mday">{{ row.label }}</div>
-      <form method="post" style="flex:1;display:flex;">{% csrf_token %}<input type="hidden" name="week" value="{{ week_param }}">
-        <input type="hidden" name="set_day" value="{{ row.day }}">
-        <select name="recipe_id" onchange="this.form.submit()">
-          <option value="">—</option>
-          {% for r in recipes %}
-            <option value="{{ r.id }}" {% if row.selected == r.id %}selected{% endif %}>{% if r.is_favorite %}★ {% endif %}{{ r.name }}</option>
-          {% endfor %}
-        </select>
-      </form>
+      {% if row.leftovers_from %}
+        <div class="leftovers-note">
+          <span class="row-icon icon-restes"></span>
+          Restes de {{ row.leftovers_label }}
+          <form method="post" style="display:inline;">{% csrf_token %}<input type="hidden" name="week" value="{{ week_param }}">
+            <input type="hidden" name="day" value="{{ row.day }}">
+            <button type="submit" name="clear_leftovers" value="1" class="delbtn">Annuler</button>
+          </form>
+        </div>
+      {% else %}
+        <form method="post" style="flex:1;display:flex;">{% csrf_token %}<input type="hidden" name="week" value="{{ week_param }}">
+          <input type="hidden" name="set_day" value="{{ row.day }}">
+          <select name="recipe_id" onchange="this.form.submit()" aria-label="Plat du {{ row.label }}">
+            <option value="">—</option>
+            {% for r in recipes %}
+              <option value="{{ r.id }}" {% if row.selected == r.id %}selected{% endif %}>{% if r.is_favorite %}★ {% endif %}{{ r.name }}</option>
+            {% endfor %}
+          </select>
+        </form>
+      {% endif %}
     </div>
+    {% if row.recipe and not row.leftovers_from %}
+      <div class="menurow-extra">
+        <form method="post" class="portions-form">{% csrf_token %}<input type="hidden" name="week" value="{{ week_param }}">
+          <input type="hidden" name="day" value="{{ row.day }}">
+          <label for="serv-{{ row.day }}">Pour</label>
+          <input type="number" id="serv-{{ row.day }}" name="servings" min="1" max="50"
+                 value="{{ row.servings_target }}">
+          <span>pers.</span>
+          <button type="submit" name="set_servings" value="1">OK</button>
+        </form>
+        <form method="post" class="double-form">{% csrf_token %}<input type="hidden" name="week" value="{{ week_param }}">
+          <input type="hidden" name="day" value="{{ row.day }}">
+          <label for="lo-{{ row.day }}" class="visually-hidden">Jour où manger les restes du {{ row.label }}</label>
+          <select id="lo-{{ row.day }}" name="leftovers_day">
+            {% for key, label in row.other_days %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+          </select>
+          <button type="submit" name="cook_double" value="1">Cuisiner pour 2 repas</button>
+        </form>
+        <a class="cook-link" href="{% url 'cook_mode' row.recipe.pk %}?day={{ row.day }}&week={{ week_param }}">
+          <span class="row-icon icon-cuisine"></span>Mode cuisine
+        </a>
+      </div>
+    {% endif %}
   {% endfor %}
 </div>
 

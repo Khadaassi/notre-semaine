@@ -1,0 +1,90 @@
+{% extends "planner/base.html" %}
+{% load fr %}
+{% block title %}{{ recipe.name }} — mode cuisine{% endblock %}
+{% block content %}
+<div class="cook-head">
+  <a class="cook-back" href="{{ back_url }}">← Menu</a>
+  <h2>{{ recipe.name }}</h2>
+</div>
+
+<div class="card cook-card">
+  <form method="get" class="cook-portions">
+    <label for="portions">Pour</label>
+    <input type="number" id="portions" name="portions" min="1" max="50" value="{{ servings }}">
+    <span>personne{{ servings|pluriel }}</span>
+    <button type="submit">Recalculer</button>
+  </form>
+  {% if scaled %}
+    <p class="hint" style="margin:6px 0 0;">
+      Quantités recalculées depuis la recette, prévue pour {{ recipe.servings }} personne{{ recipe.servings|pluriel }}.
+    </p>
+  {% endif %}
+
+  <h3 class="cook-sub">Ingrédients</h3>
+  <ul class="cook-ing">
+    {% for ing in ingredients %}
+      <li>
+        <label class="cook-check">
+          <input type="checkbox" data-ing>
+          <span class="cook-ing-name">{{ ing.name }}</span>
+          {% if ing.quantity_display %}<span class="cook-ing-qty">{{ ing.quantity_display }}</span>{% endif %}
+        </label>
+      </li>
+    {% empty %}
+      <li class="hint">Aucun ingrédient enregistré pour cette recette.</li>
+    {% endfor %}
+  </ul>
+</div>
+
+{% if steps %}
+<div class="card cook-card" data-cook-steps>
+  <div class="cook-step-head">
+    <h3 class="cook-sub">Étape <span data-step-num>1</span> sur {{ steps|length }}</h3>
+    <div class="progressbar"><div data-step-bar style="width:0%"></div></div>
+  </div>
+  <p class="cook-step-text" data-step-text>{{ steps.0 }}</p>
+  <div class="cook-step-nav">
+    <button type="button" data-step-prev disabled>← Précédente</button>
+    <button type="button" data-step-next>Suivante →</button>
+  </div>
+  <details class="cook-all">
+    <summary>Voir toutes les étapes</summary>
+    <ol>{% for step in steps %}<li>{{ step }}</li>{% endfor %}</ol>
+  </details>
+</div>
+
+{% comment %}
+  json_script échappe correctement le texte des étapes : pas d'apostrophe ni de guillemet
+  saisi dans une recette qui viendrait casser (ou détourner) le script.
+{% endcomment %}
+{{ steps|json_script:"cook-steps" }}
+
+<script>
+/* Une étape à la fois, en grand. L'avancement reste dans la page : une étape cochée n'a
+   aucun sens le lendemain, et rien ici ne modifie la recette ni le menu. */
+(function(){
+  const box = document.querySelector('[data-cook-steps]');
+  if (!box) return;
+  const STEPS = JSON.parse(document.getElementById('cook-steps').textContent);
+  const numEl = box.querySelector('[data-step-num]');
+  const textEl = box.querySelector('[data-step-text]');
+  const barEl = box.querySelector('[data-step-bar]');
+  const prev = box.querySelector('[data-step-prev]');
+  const next = box.querySelector('[data-step-next]');
+  let i = 0;
+
+  function render() {
+    numEl.textContent = i + 1;
+    textEl.textContent = STEPS[i];
+    barEl.style.width = Math.round((i + 1) / STEPS.length * 100) + '%';
+    prev.disabled = i === 0;
+    next.disabled = i === STEPS.length - 1;
+    next.textContent = i === STEPS.length - 1 ? 'Terminé' : 'Suivante →';
+  }
+  prev.addEventListener('click', () => { if (i > 0) { i--; render(); } });
+  next.addEventListener('click', () => { if (i < STEPS.length - 1) { i++; render(); } });
+  render();
+})();
+</script>
+{% endif %}
+{% endblock %}
