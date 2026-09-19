@@ -3303,3 +3303,18 @@ class TabletSyncTests(TestCase):
         )
         after = self.client.get(reverse('tablet_digest', args=[self.token])).json()['digest']
         self.assertEqual(before, after)
+
+
+class MenuRowShrinkTests(TestCase):
+    """Un <select> se dimensionne sur sa plus longue option, et un élément flex refuse par
+    défaut de rétrécir sous son contenu. Sans `min-width:0`, un nom de recette un peu long
+    faisait déborder toute la page du menu sur téléphone — trouvé en balayant les huit
+    écrans à 390 px, pas en lisant le code."""
+
+    def test_the_menu_row_select_is_allowed_to_shrink(self):
+        import pathlib
+        css = (pathlib.Path(__file__).resolve().parent.parent
+               / 'static' / 'planner' / 'style.css').read_text()
+        row = [line for line in css.splitlines() if line.startswith('.menurow select{')]
+        self.assertTrue(row, "la règle .menurow select a disparu")
+        self.assertIn('min-width:0', row[0])

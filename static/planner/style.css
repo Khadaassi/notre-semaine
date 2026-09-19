@@ -409,7 +409,12 @@ summary.head::-webkit-details-marker{display:none;}
 .delbtn{border:none;background:transparent;color:var(--coral-dk);cursor:pointer;font-size:12px;font-weight:800;}
 .menurow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:2px dashed var(--line);}
 .menurow .mday{width:78px;font-weight:800;font-size:13px;color:var(--navy);flex-shrink:0;}
-.menurow select{flex:1;padding:9px 10px;border-radius:10px;border:2.5px solid var(--navy);font-size:13.5px;
+/* Un <select> se dimensionne sur sa plus longue option, et un élément flex refuse par
+   défaut de rétrécir sous son contenu (min-width:auto) : un nom de recette un peu long
+   faisait donc déborder toute la page sur téléphone. `min-width:0` lui rend le droit de
+   rétrécir ; le nom choisi reste lisible, c'est la liste déroulante qui tronque. */
+.menurow form{min-width:0;}
+.menurow select{flex:1;min-width:0;padding:9px 10px;border-radius:10px;border:2.5px solid var(--navy);font-size:13.5px;
   font-weight:700;background:white;}
 .settingsrow{margin-bottom:16px;}
 .settingsrow label{display:block;font-weight:800;font-size:13.5px;margin-bottom:6px;color:var(--navy);}
