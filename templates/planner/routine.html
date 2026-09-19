@@ -1,0 +1,220 @@
+{% extends "planner/base.html" %}
+{% block content %}
+<div class="routine-head">
+  <div>
+    <h2>Nos routines</h2>
+    <div class="hint" style="margin:0;">{{ real_date|date:"l j F"|capfirst }} — chacun avance à son rythme.</div>
+  </div>
+  <a class="routine-back" href="{% url 'today' %}">Voir la checklist</a>
+</div>
+
+<div class="routine-grid">
+  {% for space in spaces %}
+  <section class="routine-space {{ space.person }} {% if space.finished %}finished{% endif %}"
+           data-space data-person="{{ space.person }}" data-can-act="{{ space.can_act|yesno:"1,0" }}"
+           aria-label="Routine de {{ space.name }}">
+    <header class="rs-head">
+      <h3>{{ space.name }}</h3>
+      <span class="rs-count" data-count>{{ space.done_count }}/{{ space.total }}</span>
+    </header>
+    <div class="progressbar"><div data-bar style="width:{{ space.pct }}%"></div></div>
+
+    <div class="rs-body" data-body {% if space.finished %}hidden{% endif %}>
+      <p class="rs-phase" data-phase>{{ space.current_phase }}</p>
+      <p class="rs-task" data-task-label>{{ space.current.label }}</p>
+
+      <div class="rs-help" data-help-state {% if not space.needs_help %}hidden{% endif %}>
+        <span class="row-icon icon-aide"></span> {{ space.name }} a besoin d'aide
+      </div>
+
+      <div class="rs-actions">
+        <button type="button" class="rs-done" data-done>C'est fait</button>
+        <button type="button" class="rs-help-btn" data-help-toggle
+                aria-pressed="{% if space.needs_help %}true{% else %}false{% endif %}">Besoin d'aide</button>
+      </div>
+      <div class="rs-actions secondary">
+        <button type="button" class="rs-timer" data-timer aria-pressed="false">
+          <span class="row-icon icon-clock"></span><span data-timer-label>Minuteur</span>
+        </button>
+        <button type="button" class="rs-undo" data-undo hidden>Annuler <span data-undo-label></span></button>
+      </div>
+    </div>
+
+    {# Célébration dans l'espace de l'enfant : elle ne recouvre jamais les commandes de l'autre. #}
+    <div class="rs-finished" data-finished {% if not space.finished %}hidden{% endif %}>
+      <span class="rs-finished-badge"><span class="milestone-icon icon-etoile"></span></span>
+      <p class="rs-finished-msg" data-finished-msg>Routine terminée, bravo {{ space.name }} !</p>
+      <button type="button" class="rs-undo" data-undo hidden>Annuler <span data-undo-label></span></button>
+    </div>
+
+    <details class="rs-list">
+      <summary>Sa routine ({{ space.total }} tâche{{ space.total|pluralize }})</summary>
+      <ol data-list>
+        {% for task in space.sequence %}
+          <li data-item="{{ task.id }}" data-phase="{{ task.phase_label }}"
+              class="{% if task.done %}done{% endif %}">{{ task.label }}</li>
+        {% endfor %}
+      </ol>
+    </details>
+  </section>
+  {% empty %}
+    <div class="card"><div class="hint">Aucun enfant configuré.</div></div>
+  {% endfor %}
+</div>
+
+<script>
+const CSRF = "{{ csrf_token }}";
+const DAY = "{{ day }}";
+
+function reducedMotion() {
+  return !!(window.nsPrefersReducedMotion && window.nsPrefersReducedMotion());
+}
+
+/* Chaque espace est autonome : toutes les requêtes portent son `person`, et rien de ce qui
+   s'y passe ne touche au DOM de l'autre enfant. */
+document.querySelectorAll('[data-space]').forEach(space => {
+  const person = space.dataset.person;
+  const items = Array.from(space.querySelectorAll('[data-item]'));
+  const body = space.querySelector('[data-body]');
+  const finished = space.querySelector('[data-finished]');
+  const phaseEl = space.querySelector('[data-phase]');
+  const labelEl = space.querySelector('[data-task-label]');
+  const countEl = space.querySelector('[data-count]');
+  const barEl = space.querySelector('[data-bar]');
+  const helpState = space.querySelector('[data-help-state]');
+  const helpBtn = space.querySelector('[data-help-toggle]');
+  const timerBtn = space.querySelector('[data-timer]');
+  const timerLabel = space.querySelector('[data-timer-label]');
+  const undoBtns = Array.from(space.querySelectorAll('[data-undo]'));
+  const undoLabels = Array.from(space.querySelectorAll('[data-undo-label]'));
+  const doneBtn = space.querySelector('[data-done]');
+  let timerTaskId = null;
+
+  // Le droit d'agir est décidé espace par espace : un compte qui ne peut pas cocher pour cet
+  // enfant voit sa routine, mais n'écrit rien. Le serveur revérifie de toute façon.
+  const canAct = space.dataset.canAct === '1';
+  if (!canAct) {
+    space.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  }
+
+  const currentItem = () => items.find(li => !li.classList.contains('done')) || null;
+
+  /* La cible d'« Annuler » est la dernière tâche cochée de la liste, relue du DOM plutôt
+     que gardée dans une variable : après un rechargement l'enfant peut donc encore revenir
+     sur son dernier coche — c'est justement là qu'il en a besoin. */
+  const undoItem = () => {
+    const done = items.filter(li => li.classList.contains('done'));
+    return done.length ? done[done.length - 1] : null;
+  };
+
+  function post(url, data) {
+    const fd = new FormData();
+    Object.entries(data).forEach(([k, v]) => fd.append(k, v));
+    return fetch(url, {method: 'POST', headers: {'X-CSRFToken': CSRF}, body: fd})
+      .then(r => { if (!r.ok) throw new Error('http'); return r.json(); });
+  }
+
+  function render() {
+    const li = currentItem();
+    const doneCount = items.filter(x => x.classList.contains('done')).length;
+    countEl.textContent = doneCount + '/' + items.length;
+    barEl.style.width = (items.length ? Math.round(doneCount / items.length * 100) : 0) + '%';
+    space.classList.toggle('finished', !li && items.length > 0);
+    if (li) {
+      labelEl.textContent = li.textContent;
+      phaseEl.textContent = li.dataset.phase || phaseEl.textContent;
+      body.hidden = false;
+      finished.hidden = true;
+    } else {
+      body.hidden = true;
+      finished.hidden = false;
+      if (!reducedMotion()) finished.classList.add('pop');
+    }
+    const undo = undoItem();
+    undoBtns.forEach(b => { b.hidden = !undo; });
+    undoLabels.forEach(el => { el.textContent = undo ? '« ' + undo.textContent.trim() + ' »' : ''; });
+  }
+
+  doneBtn && doneBtn.addEventListener('click', () => {
+    const li = currentItem();
+    if (!li) return;
+    const taskId = li.dataset.item;
+    doneBtn.disabled = true;                       // pas de double soumission
+    post("{% url 'toggle_task' %}", {person, task_id: taskId, day: DAY, done: '1'})
+      .then(data => {
+        li.classList.add('done');
+        helpState.hidden = true;                   // l'aide reçue tombe avec la tâche
+        helpBtn.setAttribute('aria-pressed', 'false');
+        if (data && data.milestone_reached) {
+          const msg = space.querySelector('[data-finished-msg]');
+          if (msg) msg.textContent = data.reward_text ||
+            "Bravo, tu as complété une série entière ! Maman et Papa ont un cadeau pour toi !";
+        }
+        render();
+      })
+      .catch(() => notify(space, "Échec de l'enregistrement.", () => doneBtn.click()))
+      .finally(() => { doneBtn.disabled = false; });
+  });
+
+  undoBtns.forEach(btn => btn.addEventListener('click', () => {
+    const li = undoItem();
+    if (!li) return;
+    btn.disabled = true;
+    post("{% url 'toggle_task' %}", {person, task_id: li.dataset.item, day: DAY, done: '0'})
+      .then(() => { li.classList.remove('done'); render(); })
+      .catch(() => notify(space, "Impossible d'annuler."))
+      .finally(() => { btn.disabled = false; });
+  }));
+
+  helpBtn && helpBtn.addEventListener('click', () => {
+    const li = currentItem();
+    if (!li) return;
+    const wants = helpBtn.getAttribute('aria-pressed') !== 'true';
+    post("{% url 'toggle_help' %}", {person, task_id: li.dataset.item, help: wants ? '1' : '0'})
+      .then(data => {
+        helpBtn.setAttribute('aria-pressed', data.needs_help ? 'true' : 'false');
+        helpState.hidden = !data.needs_help;
+      })
+      .catch(() => notify(space, "Échec, réessayez."));
+  });
+
+  timerBtn && timerBtn.addEventListener('click', () => {
+    const li = currentItem();
+    if (!li) return;
+    const running = timerBtn.getAttribute('aria-pressed') === 'true';
+    const taskId = running ? timerTaskId : li.dataset.item;
+    post("{% url 'timer_task' %}", {person, task_id: taskId, day: DAY,
+                                    action: running ? 'stop' : 'start'})
+      .then(data => {
+        timerBtn.setAttribute('aria-pressed', data.running ? 'true' : 'false');
+        timerTaskId = data.running ? taskId : null;
+        timerLabel.textContent = data.running ? 'Arrêter' : 'Minuteur';
+      })
+      .catch(() => notify(space, 'Minuteur indisponible.'));
+  });
+
+  render();
+});
+
+/* Message discret dans l'espace concerné, avec « Réessayer » — pas d'alert() bloquante qui
+   couperait la routine de l'autre enfant. */
+function notify(space, text, retry) {
+  const old = space.querySelector('.rs-note');
+  if (old) old.remove();
+  const note = document.createElement('div');
+  note.className = 'rs-note';
+  note.setAttribute('role', 'status');
+  note.textContent = text + ' ';
+  if (retry) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'rs-retry';
+    b.textContent = 'Réessayer';
+    b.addEventListener('click', () => { note.remove(); retry(); });
+    note.appendChild(b);
+  }
+  space.appendChild(note);
+  setTimeout(() => note.remove(), 8000);
+}
+</script>
+{% endblock %}

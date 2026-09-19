@@ -11,12 +11,14 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
+from django.utils import timezone
+from unittest.mock import patch
 
 from .forms import RecipeForm, parse_ingredients_text
 from .models import (
     Family, FamilySettings, FamilyMembership, PARENT_ROLES, StarAward, KidStars,
     TaskCompletion, TaskException, Activity, Recipe, GroceryItem, WeeklyMenuEntry,
-    CustomTask, DayMode,
+    CustomTask, DayMode, HelpRequest,
 )
 from .task_logic import (
     is_zone_b_holiday, ZONE_B_HOLIDAYS, DAYS, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for,
@@ -24,6 +26,7 @@ from .task_logic import (
 )
 from .views import (
     _checkable_ids_for, _award_star_if_day_complete, _real_date_for_day, _level_for, _monday_of,
+    _today,
 )
 
 _ingredient_migration = importlib.import_module('planner.migrations.0016_migrate_ingredient_format')
@@ -1926,3 +1929,224 @@ class WizardStepPreservedAcrossSamePageActionsTests(TestCase):
             'tt2_day': 'lundi', 'courses_day': 'samedi',
         })
         self.assertRedirects(resp, f"{reverse('settings')}?wizard=1&step=2")
+
+
+class GuidedRoutineTests(TestCase):
+    """Routine guidée : deux espaces sur le même écran, une seule source de progression.
+
+    Ce qui est vérifié ici est exactement ce qui pouvait casser en ajoutant un deuxième
+    écran de pointage : que les deux enfants n'écrivent pas l'un sur l'autre, que l'état
+    vienne de TaskCompletion (donc survive à un rechargement), qu'aucune étoile ne soit
+    attribuée deux fois parce qu'on a coché ici plutôt que sur la checklist, et que les
+    modes du jour, exceptions et réattributions s'appliquent comme sur « Aujourd'hui »."""
+
+    def setUp(self):
+        self.family = Family.objects.create(name='Routine', invite_code='ROUTFAM1')
+        settings = FamilySettings.load(self.family)
+        settings.nb_enfants = 2
+        settings.fille_name = 'Aliyah'
+        settings.fils_name = 'Adam'
+        settings.save()
+        self.parent = User.objects.create_user('routparent', password='pass12345')
+        FamilyMembership.objects.create(user=self.parent, family=self.family, role='maman')
+        self.client.force_login(self.parent)
+        self.today = _today()
+        self.day = DAYS[self.today.weekday()]
+
+    def _spaces(self):
+        resp = self.client.get(reverse('routine'))
+        self.assertEqual(resp.status_code, 200)
+        return {s['person']: s for s in resp.context['spaces']}
+
+    def _toggle(self, person, task_id, done='1'):
+        return self.client.post(reverse('toggle_task'), {
+            'person': person, 'task_id': task_id, 'day': self.day, 'done': done,
+        })
+
+    def test_two_kids_get_their_own_independent_space(self):
+        spaces = self._spaces()
+        self.assertEqual(set(spaces), {'fille', 'fils'})
+        self.assertEqual(spaces['fille']['name'], 'Aliyah')
+        self.assertEqual(spaces['fils']['name'], 'Adam')
+        self.assertTrue(spaces['fille']['sequence'])
+        self.assertTrue(spaces['fils']['sequence'])
+
+    def test_one_kid_advancing_does_not_move_the_other(self):
+        before = self._spaces()
+        fille_first = before['fille']['current']['id']
+        fils_current_before = before['fils']['current']['id']
+
+        self._toggle('fille', fille_first)
+
+        after = self._spaces()
+        self.assertEqual(after['fille']['done_count'], 1)
+        self.assertNotEqual(after['fille']['current']['id'], fille_first)
+        # L'autre espace n'a strictement pas bougé.
+        self.assertEqual(after['fils']['done_count'], 0)
+        self.assertEqual(after['fils']['current']['id'], fils_current_before)
+
+    def test_progress_survives_a_reload_because_it_comes_from_taskcompletion(self):
+        first = self._spaces()['fille']['current']['id']
+        self._toggle('fille', first)
+
+        # Nouveau GET = nouvelle dérivation depuis la base, pas un état JS gardé en page.
+        reloaded = self._spaces()['fille']
+        self.assertEqual(reloaded['done_count'], 1)
+        done_ids = [t['id'] for t in reloaded['sequence'] if t['done']]
+        self.assertEqual(done_ids, [first])
+        self.assertTrue(
+            TaskCompletion.objects.filter(
+                family=self.family, person='fille', date=self.today, task_id=first, done=True
+            ).exists()
+        )
+
+    def test_same_task_ids_as_the_checklist_so_both_screens_share_one_progression(self):
+        routine_ids = {t['id'] for t in self._spaces()['fille']['sequence']}
+        self.assertEqual(routine_ids, set(_checkable_ids_for('fille', self.day, self.family)))
+
+    def test_finishing_the_routine_awards_exactly_one_star(self):
+        for task in self._spaces()['fille']['sequence']:
+            self._toggle('fille', task['id'])
+
+        space = self._spaces()['fille']
+        self.assertTrue(space['finished'])
+        self.assertEqual(space['remaining'], 0)
+        self.assertEqual(
+            StarAward.objects.filter(family=self.family, person='fille', date=self.today).count(), 1
+        )
+        self.assertEqual(KidStars.objects.get(family=self.family, person='fille').total, 1)
+
+    def test_rechecking_from_the_routine_does_not_award_a_second_star(self):
+        ids = [t['id'] for t in self._spaces()['fille']['sequence']]
+        for task_id in ids:
+            self._toggle('fille', task_id)
+        # On recoche la dernière tâche comme le ferait un double clic ou un retour en arrière.
+        self._toggle('fille', ids[-1], done='0')
+        self._toggle('fille', ids[-1])
+
+        self.assertEqual(
+            StarAward.objects.filter(family=self.family, person='fille', date=self.today).count(), 1
+        )
+        self.assertEqual(KidStars.objects.get(family=self.family, person='fille').total, 1)
+
+    def test_one_kid_finishing_leaves_the_other_star_untouched(self):
+        for task in self._spaces()['fille']['sequence']:
+            self._toggle('fille', task['id'])
+
+        self.assertTrue(StarAward.objects.filter(family=self.family, person='fille').exists())
+        self.assertFalse(StarAward.objects.filter(family=self.family, person='fils').exists())
+        self.assertFalse(self._spaces()['fils']['finished'])
+
+    def test_day_mode_applies_to_the_guided_routine(self):
+        DayMode.objects.update_or_create(
+            family=self.family, person='fille', date=self.today, defaults={'mode': 'allegee'}
+        )
+        space = self._spaces()['fille']
+        self.assertEqual(space['day_mode'], 'allegee')
+        # Règle métier : le Coran reste présent, en révision légère.
+        coran = [t for t in space['sequence'] if t['id'] == 'coran']
+        self.assertEqual(len(coran), 1)
+        self.assertIn('légère', coran[0]['label'])
+
+    def test_not_applicable_exception_is_left_out_of_the_sequence(self):
+        excluded = self._spaces()['fille']['sequence'][0]['id']
+        TaskException.objects.create(
+            family=self.family, person='fille', task_id=excluded,
+            kind='not_applicable', date=self.today,
+        )
+        ids = [t['id'] for t in self._spaces()['fille']['sequence']]
+        self.assertNotIn(excluded, ids)
+
+    def test_reassigned_task_leaves_the_kid_space(self):
+        handed = self._spaces()['fille']['sequence'][0]['id']
+        TaskException.objects.create(
+            family=self.family, person='fille', task_id=handed,
+            kind='reassigned', reassigned_to='maman', date=self.today,
+        )
+        ids = [t['id'] for t in self._spaces()['fille']['sequence']]
+        self.assertNotIn(handed, ids)
+
+    def test_help_request_is_raised_and_cleared_when_the_task_is_done(self):
+        task_id = self._spaces()['fille']['current']['id']
+
+        self.client.post(reverse('toggle_help'), {
+            'person': 'fille', 'task_id': task_id, 'help': '1',
+        })
+        self.assertTrue(self._spaces()['fille']['needs_help'])
+        self.assertTrue(
+            HelpRequest.objects.filter(
+                family=self.family, person='fille', task_id=task_id, active=True
+            ).exists()
+        )
+
+        self._toggle('fille', task_id)
+        self.assertFalse(
+            HelpRequest.objects.filter(
+                family=self.family, person='fille', task_id=task_id, active=True
+            ).exists()
+        )
+
+    def test_help_of_one_kid_does_not_flag_the_other(self):
+        spaces = self._spaces()
+        self.client.post(reverse('toggle_help'), {
+            'person': 'fille', 'task_id': spaces['fille']['current']['id'], 'help': '1',
+        })
+        after = self._spaces()
+        self.assertTrue(after['fille']['needs_help'])
+        self.assertFalse(after['fils']['needs_help'])
+
+    def test_help_is_refused_server_side_for_another_family(self):
+        other = Family.objects.create(name='Autre', invite_code='ROUTFAM2')
+        FamilySettings.load(other)
+        intruder = User.objects.create_user('intrus', password='pass12345')
+        FamilyMembership.objects.create(user=intruder, family=other, role='maman')
+        self.client.force_login(intruder)
+
+        self.client.post(reverse('toggle_help'), {
+            'person': 'fille', 'task_id': 'lit', 'help': '1',
+        })
+        # L'action n'a pu toucher que la famille de l'intrus, jamais la nôtre.
+        self.assertFalse(HelpRequest.objects.filter(family=self.family).exists())
+        self.assertTrue(HelpRequest.objects.filter(family=other).exists())
+
+    def test_routine_requires_login(self):
+        self.client.logout()
+        resp = self.client.get(reverse('routine'))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_toggle_help_rejects_get(self):
+        self.assertEqual(self.client.get(reverse('toggle_help')).status_code, 405)
+
+
+class LocalDateTests(TestCase):
+    """L'app doit dater la journée de la famille en heure locale Django (Europe/Paris) et
+    non sur l'horloge système : en production le serveur tourne en UTC, donc entre minuit
+    et 2 h du matin à Paris date.today() renvoie encore la veille."""
+
+    def test_today_follows_django_local_time(self):
+        self.assertEqual(_today(), timezone.localdate())
+
+    def test_today_differs_from_utc_date_when_paris_is_already_tomorrow(self):
+        # 23 h 30 UTC un 30 juin = 1 h 30 le 1er juillet à Paris.
+        instant = datetime.datetime(2025, 6, 30, 23, 30, tzinfo=datetime.timezone.utc)
+        with patch('django.utils.timezone.now', return_value=instant):
+            self.assertEqual(_today(), datetime.date(2025, 7, 1))
+            self.assertEqual(instant.date(), datetime.date(2025, 6, 30))
+
+
+class TemplateCommentSyntaxTests(TestCase):
+    """`{# ... #}` est un commentaire d'une seule ligne : s'il est ouvert sur une ligne et
+    fermé sur une autre, Django ne le reconnaît pas et son texte s'affiche tel quel dans la
+    page. C'est déjà arrivé deux fois (bandeau de navigation, cartes de tâches) ; un
+    commentaire sur plusieurs lignes doit utiliser {% comment %}...{% endcomment %}."""
+
+    def test_no_unterminated_single_line_comment_in_templates(self):
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent / 'templates'
+        offenders = []
+        for path in root.rglob('*.html'):
+            for lineno, line in enumerate(path.read_text().splitlines(), 1):
+                if '{#' in line and '#}' not in line.split('{#', 1)[1]:
+                    offenders.append(f'{path.relative_to(root)}:{lineno}')
+        self.assertEqual(offenders, [], f"commentaires {{# #}} non fermés sur leur ligne : {offenders}")

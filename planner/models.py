@@ -404,6 +404,30 @@ class DayMode(models.Model):
         return f"{self.person} {self.date}: {self.mode}"
 
 
+class HelpRequest(models.Model):
+    """« Besoin d'aide » levé par un enfant pendant la routine guidée, pour une tâche et un
+    jour donnés.
+
+    Volontairement à part de la progression : celle-ci reste entièrement portée par
+    TaskCompletion (une seule source, partagée avec la checklist). Ce drapeau ne fait
+    qu'afficher un état visible dans l'espace de l'enfant concerné — il ne bloque pas
+    l'autre enfant et ne déclenche aucune notification externe. Résolu (active=False) dès
+    que l'aide est arrivée ou que la tâche est validée."""
+    family = models.ForeignKey(Family, on_delete=models.CASCADE)
+    person = models.CharField(max_length=10, choices=PERSON_CHOICES)
+    date = models.DateField()
+    task_id = models.CharField(max_length=60)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('family', 'person', 'date', 'task_id')
+        indexes = [models.Index(fields=['family', 'date', 'active'])]
+
+    def __str__(self):
+        return f"{self.person} {self.date} {self.task_id} aide={'oui' if self.active else 'non'}"
+
+
 class GroceryItem(models.Model):
     family = models.ForeignKey(Family, on_delete=models.CASCADE)
     name = models.CharField(max_length=150)

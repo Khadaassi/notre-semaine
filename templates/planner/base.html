@@ -52,7 +52,11 @@
 
   {% if user.is_authenticated %}
   <nav class="tabs">
-    <a href="{% url 'today' %}" class="{% if request.resolver_match.url_name == 'today' %}active{% endif %}">
+    {% comment %}
+      La routine guidée est une vue de la journée en cours : pas un 7e onglet qui serrerait
+      la barre sur téléphone, mais un état de l'onglet « Aujourd'hui ».
+    {% endcomment %}
+    <a href="{% url 'today' %}" class="{% if request.resolver_match.url_name == 'today' or request.resolver_match.url_name == 'routine' %}active{% endif %}">
       <span class="nav-icon icon-today"></span><span class="nav-label">Aujourd'hui</span></a>
     <a href="{% url 'week' %}" class="{% if request.resolver_match.url_name == 'week' %}active{% endif %}">
       <span class="nav-icon icon-organisation"></span><span class="nav-label">Organisation</span></a>

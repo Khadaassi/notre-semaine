@@ -75,6 +75,17 @@
 </div>
 {% endif %}
 
+{% if show_routine_entry %}
+<a class="routine-entry" href="{% url 'routine' %}">
+  <span class="re-icon"><span class="row-icon icon-checklist"></span></span>
+  <span class="re-text">
+    <strong>Commencer nos routines</strong>
+    <span class="re-sub">{% if routine_remaining %}Une tâche à la fois, chacun de son côté — {{ routine_remaining }} restante{{ routine_remaining|pluralize }}{% else %}Tout est fait pour aujourd'hui, bravo !{% endif %}</span>
+  </span>
+  <span class="re-go">›</span>
+</a>
+{% endif %}
+
 <div class="kidgrid">
   {% include "planner/_person_cards.html" with cards=kid_cards %}
 </div>

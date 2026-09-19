@@ -23,6 +23,7 @@ from .models import (
     FamilySettings, Activity, TaskCompletion, Recipe, WeeklyMenuEntry, GroceryItem,
     CustomTask, FamilyMembership, PARENT_ROLES, TaskOrder, StarAward, KidStars, TaskException,
     format_quantity, TASK_EXCEPTION_KIND_CHOICES, DayMode, DAY_MODE_CHOICES, PERSON_CHOICES,
+    HelpRequest,
 )
 from .task_logic import (
     DAYS, DAY_FULL, SCHOOL_DAYS, WEEKEND_DAYS, tasks_for, next_day, pillar_for,
@@ -95,13 +96,28 @@ def _can_act_on(request, person):
     return person in ('fille', 'fils')
 
 
+def _today():
+    """La date « aujourd'hui » de la famille, en heure locale Django (Europe/Paris).
+
+    À ne jamais remplacer par datetime.date.today(), qui suit l'horloge système du serveur :
+    en production celle-ci est en UTC, donc entre minuit et 2 h du matin à Paris elle renvoie
+    encore la veille — la journée de l'enfant changerait avec une ou deux heures de retard."""
+    return timezone.localdate()
+
+
+def _now():
+    """L'heure locale de la famille (Europe/Paris), naïve, pour comparer aux heures saisies
+    dans l'app (début d'activité, plage horaire) qui sont elles aussi locales et naïves."""
+    return timezone.localtime().replace(tzinfo=None)
+
+
 def _monday_of(d):
     return d - datetime.timedelta(days=d.weekday())
 
 
 def _real_date_for_day(day):
-    today_idx = datetime.date.today().weekday()
-    return datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
+    today_idx = _today().weekday()
+    return _today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
 
 
 def _current_phase_now(now_time):
@@ -201,23 +217,23 @@ def today(request):
     custom_tasks = list(CustomTask.objects.filter(family=family))
 
     day = request.GET.get('day')
-    today_idx = datetime.date.today().weekday()  # 0=lundi
+    today_idx = _today().weekday()  # 0=lundi
     if day not in DAYS:
         day = DAYS[today_idx]
 
-    real_date = datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
+    real_date = _today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
     holiday_today = is_zone_b_holiday(real_date)
     holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
 
     # Only today's date has a meaningful "current period" — on any other day chip every
     # phase card just opens expanded (see 'open_default' below).
     is_today_view = day == DAYS[today_idx]
-    now = datetime.datetime.now()
+    now = _now()
     current_phase = _current_phase_now(now.time())
 
     # Direct access to the evening meal — unlike "À venir"/"À préparer pour demain" this isn't
     # relative to right now, so it's shown for whichever day chip is selected, not just today.
-    week_start = _monday_of(datetime.date.today())
+    week_start = _monday_of(_today())
     menu_entry = WeeklyMenuEntry.objects.filter(
         family=family, week_start=week_start, day=day
     ).select_related('recipe').first()
@@ -290,28 +306,16 @@ def today(request):
     all_people = _family_people(settings)
     cards = []
     for person in view_people:
-        day_mode = active_day_mode(family, person, real_date)
-        task_list = _apply_task_overrides(
-            family, person, day, real_date, settings, activities, custom_tasks,
-            holiday_today, holiday_tomorrow, day_mode=day_mode,
+        day_mode, task_list, phases = _person_day_tasks(
+            family, person, day, real_date, settings, activities, custom_tasks, orders,
+            holiday_today, holiday_tomorrow,
         )
-        completions = {
-            tc.task_id: tc
-            for tc in TaskCompletion.objects.filter(family=family, person=person, date=real_date)
-        }
-        for x in task_list:
-            tc = completions.get(x['id'])
-            x['done'] = tc.done if tc else False
-            x['seconds_spent'] = tc.seconds_spent if tc else 0
-            x['timer_running'] = bool(tc and tc.timer_started_at)
-            x['timer_started_ms'] = int(tc.timer_started_at.timestamp() * 1000) if (tc and tc.timer_started_at) else None
         if is_today_view:
             for x in task_list:
                 if 'demain' in x['id']:
                     tomorrow_prep.append({
                         'name': _person_label(person, settings), 'label': x['label'], 'done': x['done'],
                     })
-        phases = [(pk, pl, apply_order(ts, orders.get(person, {}))) for pk, pl, ts in group_by_phase(task_list)]
         phase_cards = []
         for phase_key, phase_label, tasks in phases:
             checkable = [x for x in tasks if not x['info'] and not x['not_applicable']]
@@ -341,8 +345,16 @@ def today(request):
     kid_cards = [c for c in cards if c['person'] in ('fille', 'fils')]
     parent_cards = [c for c in cards if c['person'] in ('maman', 'papa')] if is_parent else []
 
+    # La routine guidée ne porte que sur la journée en cours : sur un autre jour du bandeau,
+    # on ne propose pas un parcours qui écrirait sur aujourd'hui.
+    routine_remaining = sum(
+        pc['remaining'] for c in kid_cards for pc in c['phase_cards']
+    ) if is_today_view else 0
+
     return render(request, 'planner/today.html', {
         'kid_cards': kid_cards, 'parent_cards': parent_cards, 'day': day, 'day_chips': day_chips,
+        'show_routine_entry': is_today_view and bool(kid_cards),
+        'routine_remaining': routine_remaining,
         'real_date': real_date, 'settings': settings, 'is_parent': is_parent,
         'who_options': who_options, 'who': who,
         'upcoming_activity': upcoming_activity, 'tomorrow_prep': tomorrow_prep,
@@ -407,6 +419,43 @@ def _apply_task_overrides(family, person, day, real_date, settings, activities, 
     return task_list
 
 
+def _person_day_tasks(family, person, day, real_date, settings, activities, custom_tasks,
+                      orders, holiday_today=None, holiday_tomorrow=None, day_mode=None):
+    """Une personne, un jour : sa liste de tâches ordonnée, groupée par phase, avec l'état
+    de complétion et de minuteur déjà attaché.
+
+    Source unique partagée par la checklist ('Aujourd'hui'), la routine guidée et la
+    tablette, pour qu'aucun de ces écrans ne puisse diverger sur ce qui reste à faire, dans
+    quel ordre, ni sur ce que le mode du jour, les exceptions et les réattributions ont
+    retiré. Retourne (day_mode, liste à plat, phases)."""
+    if holiday_today is None:
+        holiday_today = is_zone_b_holiday(real_date)
+    if holiday_tomorrow is None:
+        holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
+    if day_mode is None:
+        day_mode = active_day_mode(family, person, real_date)
+
+    task_list = _apply_task_overrides(
+        family, person, day, real_date, settings, activities, custom_tasks,
+        holiday_today, holiday_tomorrow, day_mode=day_mode,
+    )
+    completions = {
+        tc.task_id: tc
+        for tc in TaskCompletion.objects.filter(family=family, person=person, date=real_date)
+    }
+    for x in task_list:
+        tc = completions.get(x['id'])
+        x['done'] = tc.done if tc else False
+        x['seconds_spent'] = tc.seconds_spent if tc else 0
+        x['timer_running'] = bool(tc and tc.timer_started_at)
+        x['timer_started_ms'] = (
+            int(tc.timer_started_at.timestamp() * 1000) if (tc and tc.timer_started_at) else None
+        )
+    phases = [(pk, pl, apply_order(ts, orders.get(person, {})))
+              for pk, pl, ts in group_by_phase(task_list)]
+    return day_mode, task_list, phases
+
+
 def _checkable_ids_for(person, day, family):
     settings = FamilySettings.load(family)
     activities = list(Activity.objects.filter(family=family))
@@ -468,6 +517,11 @@ def toggle_task(request):
     TaskCompletion.objects.update_or_create(
         family=family, person=person, date=real_date, task_id=task_id, defaults={'done': done}
     )
+    if done:
+        # La tâche est faite : le « besoin d'aide » qui la concernait n'a plus lieu d'être.
+        HelpRequest.objects.filter(
+            family=family, person=person, date=real_date, task_id=task_id, active=True
+        ).update(active=False)
     milestone_reached, stars_total, reward_text = False, None, None
     if done and person in ('fille', 'fils'):
         milestone_reached, stars_total, reward_text = _award_star_if_day_complete(family, person, day, real_date)
@@ -524,12 +578,97 @@ def reorder_tasks(request):
 
 
 @login_required
+def routine_view(request):
+    """« Commencer nos routines » : un espace par enfant, côte à côte, sur l'écran partagé.
+
+    Chaque enfant avance à son rythme — la tâche courante d'un espace est simplement la
+    première tâche non faite de SA liste, dérivée à chaque affichage de TaskCompletion. Il
+    n'y a donc aucun second système de progression : cocher ici ou depuis la checklist
+    écrit exactement la même chose, les étoiles suivent les mêmes règles, et un
+    rechargement repart de l'état réel.
+
+    L'ordre personnalisé, le mode du jour, les exceptions et les réattributions sont ceux de
+    _person_day_tasks, partagé avec « Aujourd'hui ». Les tâches non applicables et les lignes
+    d'information sont exclues du parcours : on ne demande de faire que ce qui est à faire."""
+    family = _get_family(request)
+    _ensure_seed_data(family)
+    settings = FamilySettings.load(family)
+    activities = list(Activity.objects.filter(family=family))
+    custom_tasks = list(CustomTask.objects.filter(family=family))
+    orders = {}
+    for o in TaskOrder.objects.filter(family=family):
+        orders.setdefault(o.person, {})[o.task_id] = o.order
+
+    real_date = _today()
+    day = DAYS[real_date.weekday()]
+    help_flags = set(
+        HelpRequest.objects.filter(family=family, date=real_date, active=True)
+        .values_list('person', 'task_id')
+    )
+
+    spaces = []
+    for person in _kids_people(settings):
+        day_mode, _task_list, phases = _person_day_tasks(
+            family, person, day, real_date, settings, activities, custom_tasks, orders,
+        )
+        sequence = []
+        for phase_key, phase_label, tasks in phases:
+            for task in tasks:
+                if task['info'] or task['not_applicable']:
+                    continue
+                sequence.append(dict(task, phase_label=phase_label))
+        done_count = sum(1 for task in sequence if task['done'])
+        current = next((task for task in sequence if not task['done']), None)
+        spaces.append({
+            'person': person,
+            'name': _person_label(person, settings),
+            'sequence': sequence,
+            'current': current,
+            'current_phase': current['phase_label'] if current else '',
+            'needs_help': bool(current and (person, current['id']) in help_flags),
+            'done_count': done_count,
+            'total': len(sequence),
+            'remaining': len(sequence) - done_count,
+            'pct': round(done_count / len(sequence) * 100) if sequence else 0,
+            'finished': bool(sequence) and done_count == len(sequence),
+            'day_mode': day_mode,
+            'can_act': _can_act_on(request, person),
+        })
+
+    return render(request, 'planner/routine.html', {
+        'spaces': spaces, 'day': day, 'real_date': real_date,
+    })
+
+
+@login_required
+@require_POST
+def toggle_help(request):
+    """Lève ou retire le « besoin d'aide » d'un enfant sur une tâche. Purement un drapeau
+    d'affichage dans l'espace de cet enfant : il ne bloque pas l'autre, ne touche pas à la
+    progression et n'envoie aucune notification externe."""
+    family = _get_family(request)
+    person = request.POST.get('person')
+    if not _can_act_on(request, person):
+        raise PermissionDenied
+    task_id = request.POST.get('task_id', '').strip()
+    if person not in PERSON_KEYS or not task_id:
+        return JsonResponse({'ok': False}, status=400)
+    wants_help = request.POST.get('help') == '1'
+    real_date = _today()
+    HelpRequest.objects.update_or_create(
+        family=family, person=person, date=real_date, task_id=task_id,
+        defaults={'active': wants_help},
+    )
+    return JsonResponse({'ok': True, 'needs_help': wants_help})
+
+
+@login_required
 def stars_view(request):
     family = _get_family(request)
     settings = FamilySettings.load(family)
     milestone = max(1, settings.star_milestone)
     kids = [p for p in _family_people(settings) if p in ('fille', 'fils')]
-    today = datetime.date.today()
+    today = _today()
 
     trackers = []
     for kid in kids:
@@ -609,13 +748,13 @@ def _week_start_from_request(request):
             return _monday_of(datetime.date.fromisoformat(week_param))
         except ValueError:
             pass
-    return _monday_of(datetime.date.today())
+    return _monday_of(_today())
 
 
 def _week_context(week_start):
     """Common display context for a chosen week: its Monday/Sunday, whether it's the current
     one, and the ?week= value to thread through links and redirects."""
-    today_monday = _monday_of(datetime.date.today())
+    today_monday = _monday_of(_today())
     return {
         'week_start': week_start,
         'week_end': week_start + datetime.timedelta(days=6),
@@ -661,7 +800,7 @@ def week_view(request):
     people = _family_people(settings)
 
     week_start = _week_start_from_request(request)
-    today_monday = _monday_of(datetime.date.today())
+    today_monday = _monday_of(_today())
     menu_by_day = {e.day: e.recipe for e in
                    WeeklyMenuEntry.objects.filter(family=family, week_start=week_start).select_related('recipe')}
 
@@ -747,7 +886,7 @@ def duplicate_week(request):
     try:
         source_week = _monday_of(datetime.date.fromisoformat(week_param))
     except (TypeError, ValueError):
-        source_week = _monday_of(datetime.date.today())
+        source_week = _monday_of(_today())
     target_week = source_week + datetime.timedelta(days=7)
 
     already_planned_days = set(WeeklyMenuEntry.objects.filter(
@@ -1183,10 +1322,10 @@ def tablet_view(request, token):
     custom_tasks = list(CustomTask.objects.filter(family=family))
 
     day = request.GET.get('day')
-    today_idx = datetime.date.today().weekday()
+    today_idx = _today().weekday()
     if day not in DAYS:
         day = DAYS[today_idx]
-    real_date = datetime.date.today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
+    real_date = _today() + datetime.timedelta(days=(DAYS.index(day) - today_idx))
     holiday_today = is_zone_b_holiday(real_date)
     holiday_tomorrow = is_zone_b_holiday(real_date + datetime.timedelta(days=1))
 
@@ -1236,7 +1375,7 @@ def tablet_view(request, token):
                   'is_today': i == today_idx, 'is_selected': d == day}
                  for i, d in enumerate(DAYS)]
 
-    week_start = _monday_of(datetime.date.today())
+    week_start = _monday_of(_today())
     menu_entry = WeeklyMenuEntry.objects.filter(
         family=family, week_start=week_start, day=day
     ).select_related('recipe').first()
